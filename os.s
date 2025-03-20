@@ -1,7 +1,7 @@
 ;-----------------------------------------------------
 ;       Ex5: Counters and Timers
 ;       Aqib Faruqui 
-;       Version 1.1
+;       Version 5.4
 ;       18th March 2025
 ;
 ; This programme emulates a stopwatch using the
@@ -11,12 +11,15 @@
 ;
 ; Last modified: 14/03/2025
 ;
-; Known bugs: ECALL overwrites a0 to clear screen before printing increment
+; Known bugs: _
+;
+; Current task: Running 1 second timer
 ;
 ; Questions: 
 ;       1. Bad practice to write in whole byte for RS from user mode
 ;       2. Use a2 for delay or push/pop function parameter
 ;       3. Where to LW lcd_port for clear screen ECALL
+;       4. Where to keep count if used in function argument/returns but also used across whole programme
 ;
 ;-----------------------------------------------------
 
@@ -27,7 +30,7 @@
         
         led_port                DEFW    0x0001_0000
         lcd_port                DEFW    0x0001_0100
-        counter_port            DEFW    0x0001_0200
+        timer_port              DEFW    0x0001_0200
 
 
 ; ================================== Machine Tables ====================================
@@ -44,7 +47,10 @@
 
         ecall_table     DEFW    writeLCD
                         DEFW    writeString
-                        DEFW    buttonCheck
+                        DEFW    indefButton
+                        DEFW    timedButton
+                        DEFW    secondTimer
+
 
 
 ; =================================== Machine Space ===================================
@@ -209,13 +215,55 @@ writeString:    ADDI sp, sp, -8                 ; 1. Push working registers
 
 ;-----------------------------------------------------
 ;       Function: ECALL 2
-;                 Waits for button press
+;                 Waits indefinitely for button press
 ;          param: a0 = Button Number (0x01 -> SW1, 0x02 -> SW2, 0x04 -> SW3, 0x08 -> SW4)
 ;         return: _
 ;-----------------------------------------------------
-buttonCheck:    LW   s0, led_port               ; Load LED port
-        start:          LBU  t0, 1[s0]                  ; Read button inputs
+indefButton:    LW   s0, led_port               ; Load LED port
+        
+        indefStart:     LBU  t0, 1[s0]                  ; Read button inputs
                         BNE  t0, a0, start              ; Wait for SW1 button press
+                
+                RET
+
+
+;-----------------------------------------------------
+;       Function: ECALL 3
+;                 Waits momentarily for button press
+;          param: a0 = Button Number (0x01 -> SW1, 0x02 -> SW2, 0x04 -> SW3, 0x08 -> SW4)
+;         return: a0 = 0 if button pressed, unchanged if not
+;-----------------------------------------------------
+timedButton:    LW   s0, led_port               ; Load LED port
+                LI   t0, 0x003D0900             ; Initialise time counter (0.1 seconds)
+
+        timedStart:     LBU  t1, 1[s0]                  ; Read button inputs
+                        BEQ  t1, a0, timedPress         ; Wait for SW1 button press
+                        ADDI t0, t0, -1                 ; Decrement time counter
+                        BEQ  t0, zero, timedExit        ; Exit loop after time limit hit
+
+        timedPress:     SUB  a0, a0, a0                 ; a0 = 0 for successful button press
+
+        timedExit:      RET
+
+
+;-----------------------------------------------------
+;       Function: ECALL 4
+;                 _
+;          param: _
+;         return: _
+;-----------------------------------------------------
+secondTimer:    LW   s0, timer_port
+                LI   t0, 0x000F4240
+                SW   t0, 4[s0]                  ; Set limit to 1 second
+                LI   t0, 0x00000003
+                SW   t0, 20[s0]                 ; Turn on counter enable and modulus control bits
+
+        wait:           LW   t0, 12[s0]                 ; Load status register
+                        BGEZ t0, wait                   ; Wait for sticky bit to set
+
+                LI   t0, 0x80000003
+                SW   t0, 16[s0]                 ; Clear status bits
+                RET
 
 
 ; ================================= Machine Stack Space ================================ 
@@ -317,22 +365,47 @@ increment:      ADDI a0, a0, 1                          ; Increment input
 ;                                                     ; 
 ;-----------------------------------------------------;
 
-main:           LI   a0, 0b00001000
+main:           
+                ; 1.  Clear screen
+                LI   a0, 0b00001000
                 LI   a1, 0x01
                 LI   a7, 0                      ; writeLCD ECALL -> Clear screen
                 ECALL                           
 
-                LI   a0, 0b1001_0110_0001_0011 
+                ; 2. Print start value
+                LI   a0, 0
                 CALL printHex
+                MV   s0, a0
 
-                CALL increment
-
-                LI   a0, 0b00001000
-                LI   a1, 0x01
-                LI   a7, 0                      ; writeLCD ECALL -> Clear screen
+                ; 3. Wait for start button
+                LI   a0, 0x01
+                LI   a7, 2
                 ECALL
 
-                CALL printHex
+        increment:      ; 4. While pause not pressed
+                        LI   a0, 0x02
+                        LI   a7, 3
+                        ECALL
+                        BEZ  a0, zero, pause
+
+                        ; 5. 1 second timer
+                        LI   a7, 4
+                        ECALL
+
+                        ; 6. Increment counter
+                        MV   a0, s0
+                        CALL increment
+                        MV   s0, a0
+                        LI   a0, 0b00001000
+                        LI   a1, 0x01
+                        LI   a7, 0                      ; writeLCD ECALL -> Clear screen
+                        ECALL
+                        MV   a0, s0
+                        CALL printHex
+
+                        B increment
+
+        pause:          ; 7. Wait for reset
 
 
 stop:   J    stop
