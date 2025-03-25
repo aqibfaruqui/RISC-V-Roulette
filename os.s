@@ -1,25 +1,23 @@
 ;-----------------------------------------------------
 ;       Ex5: Counters and Timers
 ;       Aqib Faruqui 
-;       Version 5.4
-;       18th March 2025
+;       Version 5.5
+;       24th March 2025
 ;
 ; This programme emulates a stopwatch using the
 ; on-board timer and LCD with buttons to start,
 ; pause and reset.
 ;
-;
-; Last modified: 14/03/2025
-;
-; Known bugs: _
-;
-; Current task: Running 1 second timer
+; Known bugs: Change button check to take 1, 2, 3, 4
+;             Fix first timer delay for first increment iteration
+;             Turning timer off/on on each iteration -> keep it on and store counter value each iteration?
 ;
 ; Questions: 
 ;       1. Bad practice to write in whole byte for RS from user mode
 ;       2. Use a2 for delay or push/pop function parameter
 ;       3. Where to LW lcd_port for clear screen ECALL
 ;       4. Where to keep count if used in function argument/returns but also used across whole programme
+;       5. Can we clear timer status bits at start of timer instead of end
 ;
 ;-----------------------------------------------------
 
@@ -47,9 +45,10 @@
 
         ecall_table     DEFW    writeLCD
                         DEFW    writeString
-                        DEFW    indefButton
-                        DEFW    timedButton
-                        DEFW    secondTimer
+                        DEFW    buttonIndef
+                        DEFW    buttonCheck
+                        DEFW    timerStart
+                        DEFW    timerCheck
 
 
 
@@ -219,54 +218,62 @@ writeString:    ADDI sp, sp, -8                 ; 1. Push working registers
 ;          param: a0 = Button Number (0x01 -> SW1, 0x02 -> SW2, 0x04 -> SW3, 0x08 -> SW4)
 ;         return: _
 ;-----------------------------------------------------
-indefButton:    LW   s0, led_port               ; Load LED port
+buttonIndef:    LW   s0, led_port               ; Load LED port
         
         indefStart:     LBU  t0, 1[s0]                  ; Read button inputs
-                        BNE  t0, a0, start              ; Wait for SW1 button press
+                        BNE  t0, a0, indefStart         ; Wait for button press
                 
                 RET
 
 
 ;-----------------------------------------------------
 ;       Function: ECALL 3
-;                 Waits momentarily for button press
+;                 Checks for button press
 ;          param: a0 = Button Number (0x01 -> SW1, 0x02 -> SW2, 0x04 -> SW3, 0x08 -> SW4)
 ;         return: a0 = 0 if button pressed, unchanged if not
 ;-----------------------------------------------------
-timedButton:    LW   s0, led_port               ; Load LED port
-                LI   t0, 0x003D0900             ; Initialise time counter (0.1 seconds)
+buttonCheck:    LW   s0, led_port               ; Load LED port
+                LBU  t0, 1[s0]                  ; Read button inputs
+                BNE  t0, a0, buttonExit         ; Check button press
 
-        timedStart:     LBU  t1, 1[s0]                  ; Read button inputs
-                        BEQ  t1, a0, timedPress         ; Wait for SW1 button press
-                        ADDI t0, t0, -1                 ; Decrement time counter
-                        BEQ  t0, zero, timedExit        ; Exit loop after time limit hit
+                SUB  a0, a0, a0                 ; a0 = 0 for successful button press
 
-        timedPress:     SUB  a0, a0, a0                 ; a0 = 0 for successful button press
-
-        timedExit:      RET
+        buttonExit:     RET
 
 
 ;-----------------------------------------------------
 ;       Function: ECALL 4
-;                 _
+;                 Starts 1 second timer
 ;          param: _
 ;         return: _
 ;-----------------------------------------------------
-secondTimer:    LW   s0, timer_port
+timerStart:     LW   s0, timer_port
                 LI   t0, 0x000F4240
                 SW   t0, 4[s0]                  ; Set limit to 1 second
                 LI   t0, 0x00000003
                 SW   t0, 20[s0]                 ; Turn on counter enable and modulus control bits
-
-        wait:           LW   t0, 12[s0]                 ; Load status register
-                        BGEZ t0, wait                   ; Wait for sticky bit to set
-
-                LI   t0, 0x80000003
-                SW   t0, 16[s0]                 ; Clear status bits
                 RET
 
 
-; ================================= Machine Stack Space ================================ 
+;-----------------------------------------------------
+;       Function: ECALL 5
+;                 Checks timer completion
+;          param: _
+;         return: a0 = 0 if timer complete, 1 otherwise
+;-----------------------------------------------------
+timerCheck:     LW   s0, timer_port
+                LW   t0, 12[s0]                 ; Load status register
+                LI   a0, 1                      ; Maintained if timer incomplete
+                BGEZ t0, timerExit              ; Check if sticky bit set
+
+                LI   t0, 0x80000000
+                SW   t0, 16[s0]                 ; Clear sticky bit
+                LI   a0, 0                      ; Timer complete
+                
+        timerExit:      RET
+
+
+; ================================= Machine Stack Space ================================
 
 ORG 0x0000_0500
 DEFS 0x200
@@ -278,33 +285,6 @@ machine_stack:
 ORG 0x0004_0000
 user: J main
 
-        dec_table	DEFW	1000000000, 100000000, 10000000, 1000000
-	        	DEFW	100000, 10000, 1000, 100, 10, 1
-
-;-----------------------------------------------------
-;       Function: Converts unsigned binary to Binary Coded Decimal (BCD)
-;          param: a0 = Unsigned binary value 
-;         return: a0 = Binary Coded Decimal (BCD) value
-;-----------------------------------------------------
-binaryToBCD:    LA   t0, dec_table
-                MV   t1, zero
-                LI   t3, 1
-                J    bcdLoopIn
-
-        bcdLoop:        DIVU t4, a0, t2
-                        REMU a0, a0, t2
-
-                        ADD  t1, t1, t4
-                        SLLI t1, t1, 4
-
-                        ADDI t0, t0, 4
-
-        bcdLoopIn:      LW   t2, [t0]
-                        BNE  t2, t3, bcdLoop
-
-        bcdLoopOut:     ADD  a0, t1, a0
-                        RET     
-
 ;-----------------------------------------------------
 ;       Function: Prints 4 digit hex integer to LCD
 ;          param: a0 = 4 digit number in BCD
@@ -313,38 +293,41 @@ binaryToBCD:    LA   t0, dec_table
 printHex:       ADDI sp, sp, -4
                 SW   ra, [sp]
 
-                MV   s0, a0
-                SRLI a0, a0, 12
-                JAL printHex4
-                MV   a0, s0
-                SRLI a0, a0, 8
-                JAL printHex4
-                MV   a0, s0
-                SRLI a0, a0, 4
-                JAL printHex4
-                MV   a0, s0
-                JAL printHex4
+                MV   s0, a0                             ; Save input
+                SRLI a0, a0, 12                         ; Shift first digit into range
+                JAL printHex4                           ; Print first digit
+                
+                MV   a0, s0                             ; Restore saved input
+                SRLI a0, a0, 8                          ; Shift second digit into range
+                JAL printHex4                           ; Print second digit
+
+                MV   a0, s0                             ; Restore saved input
+                SRLI a0, a0, 4                          ; Shift third digit into range
+                JAL printHex4                           ; Print third digit
+
+                MV   a0, s0                             ; Restore saved input
+                JAL printHex4                           ; Print fourth digit (already in range)
                 J printHexExit
 
-        printHex4:      ANDI a0, a0, 0x000F
-                        ADDI a0, a0, 0x30
+        printHex4:      ANDI a0, a0, 0x000F                     ; Clear all bits except bottom 4
+                        ADDI a0, a0, 0x30                       ; Add '0' to convert to ASCII
                         MV   a1, a0
-                        LI   a0, 0b00001010
-                        LI   a7, 0
+                        LI   a0, 0b00001010                     
+                        LI   a7, 0                              ; ECALL 0 prints to LCD
                         ECALL
                         RET
 
-        printHexExit:   MV   a0, s0
+        printHexExit:   MV   a0, s0                             ; Restore caller state
                         LW   ra, [sp]
                         ADDI sp, sp, 4
                         RET
 
 ;-----------------------------------------------------
-;       Function: Increments 4 digit BCD value
+;       Function: Increments 4 digit BCD value, 9999 loops back to 0000
 ;          param: a0 = 4 digit number in BCD
 ;         return: a0 = Input + 1 adjusted for BCD
 ;-----------------------------------------------------
-increment:      ADDI a0, a0, 1                          ; Increment input
+incrementBCD:   ADDI a0, a0, 1                          ; Increment input
                 LI   t0, 0b0000_0000_0000_1010          ; 10 = Mask for overflowing BCD digit (>9)
                 AND  t1, a0, t0                         ; Check for overflowing least significant digit
                 LI   t2, 0                              ; Initialise propagation counter (used to restore shifted value later)
@@ -363,50 +346,54 @@ increment:      ADDI a0, a0, 1                          ; Increment input
 ;                                                     ;
 ;                    Main programme                   ;
 ;                                                     ; 
+;                   SW1             SW2               ;
+;         -->{Start}---->{Increment}--->{Pause}       ;
+;             ^                            |          ;
+;             |____________________________|          ;
+;                           SW3                       ;
+;                                                     ;
 ;-----------------------------------------------------;
 
-main:           
-                ; 1.  Clear screen
-                LI   a0, 0b00001000
-                LI   a1, 0x01
-                LI   a7, 0                      ; writeLCD ECALL -> Clear screen
+main:           LI   a0, 0b00001000                     ; Setting LCD to write control byte 
+                LI   a1, 0x01                           ; Clear screen control byte
+                LI   a7, 0                              ; ECALL 0 clears screen
                 ECALL                           
 
-                ; 2. Print start value
-                LI   a0, 0
-                CALL printHex
-                MV   s0, a0
-
-                ; 3. Wait for start button
-                LI   a0, 0x01
-                LI   a7, 2
-                ECALL
-
-        increment:      ; 4. While pause not pressed
-                        LI   a0, 0x02
-                        LI   a7, 3
-                        ECALL
-                        BEZ  a0, zero, pause
-
-                        ; 5. 1 second timer
-                        LI   a7, 4
+        start:          LI   a0, 0                              ; Initialise counter
+                        CALL printHex                           ; Print starting 0
+                        MV   s0, a0                             ; Save counter in s0
+                        LI   a0, 0x01                           ; Load button SW1 (start button)
+                        LI   a7, 2                              ; ECALL 2 waits indefinitely for button press
                         ECALL
 
-                        ; 6. Increment counter
-                        MV   a0, s0
-                        CALL increment
-                        MV   s0, a0
+        increment:      LI   a7, 4                              ; ECALL 4 starts timer
+                        ECALL
+
+                timerWait:      LI   a0, 0x02                           ; Load button SW2 (pause button)
+                                LI   a7, 3                              ; ECALL 3 checks button press and returns
+                                ECALL
+                                BEQZ a0, pause                          ; If SW2 pressed, move to pause state
+                                LI   a7, 5                              ; ECALL 5 checks timer completion
+                                ECALL
+                                BNEZ a0, timerWait                      ; Continue to check pause and timer completion until timer complete
+
+                        MV   a0, s0                             ; Load counter
+                        CALL incrementBCD                       ; Increment counter
+                        MV   s0, a0                             ; Save counter
                         LI   a0, 0b00001000
                         LI   a1, 0x01
-                        LI   a7, 0                      ; writeLCD ECALL -> Clear screen
+                        LI   a7, 0                              ; ECALL 0 clears screen
                         ECALL
-                        MV   a0, s0
-                        CALL printHex
+                        MV   a0, s0                             ; Load counter
+                        CALL printHex                           ; Print 4 digit counter 
+                        
+                        J increment                             ; Loop back to start of increment state
 
-                        B increment
+        pause:          LI   a0, 0x04                           ; Load button SW3 (reset button)
+                        LI   a7, 2                              ; ECALL 2 waits indefinitely for button press
+                        ECALL
 
-        pause:          ; 7. Wait for reset
-
+                J main                                  ; Reset button press restarts main loop
 
 stop:   J    stop
 
@@ -415,8 +402,3 @@ stop:   J    stop
 ORG 0x0004_0500
 DEFS 0x200
 user_stack:
-
-; ======================================= Strings ====================================== 
-
-org 0x0004_0700
-counter DEFH    0b0000_0000_0000_0000
