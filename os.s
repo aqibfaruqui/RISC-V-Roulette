@@ -8,16 +8,7 @@
 ; on-board timer and LCD with buttons to start,
 ; pause and reset.
 ;
-; Known bugs: Change button check to take 1, 2, 3, 4
-;             Fix first timer delay for first increment iteration
-;             Turning timer off/on on each iteration -> keep it on and store counter value each iteration?
-;
-; Questions: 
-;       1. Bad practice to write in whole byte for RS from user mode
-;       2. Use a2 for delay or push/pop function parameter
-;       3. Where to LW lcd_port for clear screen ECALL
-;       4. Where to keep count if used in function argument/returns but also used across whole programme
-;       5. Can we clear timer status bits at start of timer instead of end
+; Known bugs: None
 ;
 ;-----------------------------------------------------
 
@@ -68,7 +59,7 @@ machine:        LA   sp, machine_stack
 
 ;-----------------------------------------------------
 ;       Function: Trap handler
-;          param: s0 = System Call argument
+;          param: s0 = Saved register
 ;         return: _
 ;-----------------------------------------------------
 mhandler:       CSRRW sp, MSCRATCH, sp          ; Save user sp, get machine sp
@@ -263,12 +254,12 @@ timerStart:     LW   s0, timer_port
 ;-----------------------------------------------------
 timerCheck:     LW   s0, timer_port
                 LW   t0, 12[s0]                 ; Load status register
-                LI   a0, 1                      ; Maintained if timer incomplete
+                LI   a0, 1                      ; a0 = 1 maintained if timer incomplete
                 BGEZ t0, timerExit              ; Check if sticky bit set
 
                 LI   t0, 0x80000000
                 SW   t0, 16[s0]                 ; Clear sticky bit
-                LI   a0, 0                      ; Timer complete
+                LI   a0, 0                      ; a0 = 0 if timer complete
                 
         timerExit:      RET
 
