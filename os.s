@@ -1,60 +1,93 @@
 ;-----------------------------------------------------
-;       Ex5: Counters and Timers
+;       Ex6: Interrupts
 ;       Aqib Faruqui 
-;       Version 5.5
-;       24th March 2025
+;       Version 6.0
+;       25th March 2025
 ;
-; This programme emulates a stopwatch using the
-; on-board timer and LCD with buttons to start,
-; pause and reset.
+; This programme uses timer interrupts, no interrupt service routine (for ex7!)
 ;
-; Known bugs: None
+; Known bugs: 
+;
+; Questions: 
+;       1. Bad practice to write in whole byte for RS from user mode
+;       2. Use a2 for delay or push/pop function parameter
+;       3. Where to LW lcd_port for clear screen ECALL
+;       4. Where to keep count if used in function argument/returns but also used across whole programme
+;       5. Use CSRW or CSRS in setting CSR register bits
 ;
 ;-----------------------------------------------------
 
 ; ================================== Initialisation ===================================
 
         ORG 0
-        J machine
+        J initialisation
         
         led_port                DEFW    0x0001_0000
         lcd_port                DEFW    0x0001_0100
         timer_port              DEFW    0x0001_0200
+        pio_port                DEFW    0x0001_0300
+        interrupt_port          DEFW    0x0001_0400
 
 
 ; ================================== Machine Tables ====================================
 
-        trap_table      DEFW    0x0000_0000     
-                        DEFW    0x0000_0000    
-                        DEFW    0x0000_0000    
-                        DEFW    0x0000_0000    
-                        DEFW    0x0000_0000    
-                        DEFW    0x0000_0000    
-                        DEFW    0x0000_0000    
-                        DEFW    0x0000_0000
-                        DEFW    ecallHandler            
+        exception_table         DEFW    0x0000_0000     
+                                DEFW    0x0000_0000    
+                                DEFW    0x0000_0000    
+                                DEFW    0x0000_0000    
+                                DEFW    0x0000_0000    
+                                DEFW    0x0000_0000    
+                                DEFW    0x0000_0000    
+                                DEFW    0x0000_0000
+                                DEFW    ecallHandler            
 
-        ecall_table     DEFW    writeLCD
-                        DEFW    writeString
-                        DEFW    buttonIndef
-                        DEFW    buttonCheck
-                        DEFW    timerStart
-                        DEFW    timerCheck
+        interrupt_table         DEFW    0x0000_0000    
+                                DEFW    0x0000_0000    
+                                DEFW    0x0000_0000    
+                                DEFW    0x0000_0000    
+                                DEFW    0x0000_0000    
+                                DEFW    0x0000_0000    
+                                DEFW    0x0000_0000
+                                DEFW    0x0000_0000    
+                                DEFW    0x0000_0000    
+                                DEFW    0x0000_0000  
+                                DEFW    0x0000_0000  
+                                DEFW    mExtIntHandler    
 
+        ecall_table             DEFW    writeLCD
+                                DEFW    writeString
+                                DEFW    buttonIndef
+                                DEFW    buttonCheck
+                                DEFW    timerStart
+                                DEFW    timerCheck
+
+       ; mExtInt_table           DEFW    
 
 
 ; =================================== Machine Space ===================================
 
-machine:        LA   sp, machine_stack
-                LI   t0, 0x0000_1800            
-                CSRC MSTATUS, t0                ; Set previous priority mode to user
-                LA   t0, mhandler
+initialisation: LA   sp, machine_stack
+                LI   t0, 0x0000_1800            ; Load MPP[1:0] mask (previous priority)
+                CSRC MSTATUS, t0                ; Set previous priority mode to user (Clearing MPP[1:0])
+                LI   t0, 0x80                   ; Load MPIE bit (bit 7)
+                CSRW MSTATUS, t0                ; Set previous MIE to enable interrupts 
+                LA   t0, mhandler               
                 CSRW MTVEC, t0                  ; Initialise trap handler address
+                LI   t0, 0x0001_0400            ; Load interrupt controller base address
+                LI   t1, 0x10                   ; Enable timer interrupt (bit 4 & 5)
+                SW   t1, 4[t0]                  ; Write to interrupt controller
                 CSRW MSCRATCH, sp               ; Save machine stack pointer
-                LA   sp, user_stack             
-                LA   ra, user
-                CSRW MEPC, ra                   ; Set user space address
-                MRET                            ; Jump to user mode
+                LA   sp, user_stack             ; Load user stack pointer
+                LA   ra, user                   ; Load user space base address 
+                CSRW MEPC, ra                   ; Set previous PC to user space
+                LI   t0, 0x800                  ; Load machine external interrupt bit (bit 11)
+                CSRW MIE, t0                    ; Enable machine external interrupts in MIE
+
+                ; MRET will:
+                ; - Set PC = MEPC (user mode)
+                ; - SET MSTATUS MIE bit = MPIE (1)
+                ; - Set privilege mode = MPP (user mode)
+                MRET                            
 
 
 ;-----------------------------------------------------
@@ -67,22 +100,31 @@ mhandler:       CSRRW sp, MSCRATCH, sp          ; Save user sp, get machine sp
                 SW    s0, 4[sp]                 ; Push working registers onto machine stack
                 SW    ra, [sp]                  ;
                 CSRR  t1, MCAUSE                ; Find trap cause (e.g. ECALL = 8)
-                LA    t0, trap_table            ; Point to trap jump table
-                SLLI  t1, t1, 2                 ; Multiply MCAUSE by 4 to index words
-                ADD   t0, t0, t1                ; Calculate table entry address
-                LW    t0, [t0]                  ; Load target address
-                LA    ra, mhandler_exit         ; Store return address
-                JR    t0                        ; Jump
+                BGEZ  t1, exceptions            ; Branch if trap is an exception, otherwise an interrupt
+                ANDI  t1, t1, 0x000F            ; Clear upper bits (needed?)
 
-                mhandler_exit:
-                CSRRW t0, MEPC, t0
-                ADDI  t0, t0, 4
-                CSRRW t0, MEPC, t0              ; Correcting MEPC return address to next instruction
-                LW   ra, [sp]                   ;
-                LW   s0, 4[sp]                  ; Pop working registers from machine stack
-                ADDI sp, sp, 8                  ;
-                CSRRW sp, MSCRATCH, sp          ; Save machine sp, get user sp
-                MRET
+        interrupts:     LA    t0, interrupt_table       ; Point to interrupt jump table
+                        SLLI  t1, t1, 2                 ; Multiply MCAUSE by 4 to index words
+                        ADD   t0, t0, t1                ; Calculate interrupt table entry address
+                        LW    t0, [t0]                  ; Load target address
+                        LA    ra, interrupt_exit        ; Store return address
+                        JR    t0                        ; Jump
+
+        exceptions:     LA    t0, exception_table       ; Point to exception jump table
+                        SLLI  t1, t1, 2                 ; Multiply MCAUSE by 4 to index words
+                        ADD   t0, t0, t1                ; Calculate exception table entry address
+                        LW    t0, [t0]                  ; Load target address
+                        LA    ra, exception_exit        ; Store return address
+                        JR    t0                        ; Jump
+
+                exception_exit: CSRRW t0, MEPC, t0              ;
+                                ADDI  t0, t0, 4                 ; Move MEPC to next instruction for exceptions
+                                CSRRW t0, MEPC, t0              ; Ignore for interrupts 
+                interrupt_exit: LW   ra, [sp]                   ;
+                                LW   s0, 4[sp]                  ; Pop working registers from machine stack
+                                ADDI sp, sp, 8                  ;
+                                CSRRW sp, MSCRATCH, sp          ; Save machine sp, get user sp
+                                MRET
 
 
 ;-----------------------------------------------------
@@ -105,6 +147,20 @@ ecallHandler:   ADDI sp, sp, -4
                 ADDI sp, sp, 4
                 RET
 
+;-----------------------------------------------------
+;       Function: Machine External Interrupt Handler
+;          param: _
+;         return: _
+;-----------------------------------------------------
+mExtIntHandler: ADDI sp, sp, -4
+                SW   ra, [sp]
+
+                p J p
+
+
+                LW   ra, [sp]
+                ADDI sp, sp, 4
+                RET
 
 ;-----------------------------------------------------
 ;       Function: Delay
@@ -241,8 +297,8 @@ buttonCheck:    LW   s0, led_port               ; Load LED port
 timerStart:     LW   s0, timer_port
                 LI   t0, 0x000F4240
                 SW   t0, 4[s0]                  ; Set limit to 1 second
-                LI   t0, 0x00000003
-                SW   t0, 20[s0]                 ; Turn on counter enable and modulus control bits
+                LI   t0, 0x00000000B
+                SW   t0, 20[s0]                 ; Turn on counter enable, modulus and interrupt control bits
                 RET
 
 
@@ -254,12 +310,12 @@ timerStart:     LW   s0, timer_port
 ;-----------------------------------------------------
 timerCheck:     LW   s0, timer_port
                 LW   t0, 12[s0]                 ; Load status register
-                LI   a0, 1                      ; a0 = 1 maintained if timer incomplete
+                LI   a0, 1                      ; Maintained if timer incomplete
                 BGEZ t0, timerExit              ; Check if sticky bit set
 
                 LI   t0, 0x80000000
                 SW   t0, 16[s0]                 ; Clear sticky bit
-                LI   a0, 0                      ; a0 = 0 if timer complete
+                LI   a0, 0                      ; Timer complete
                 
         timerExit:      RET
 
