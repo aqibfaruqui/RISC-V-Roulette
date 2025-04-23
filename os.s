@@ -1,33 +1,27 @@
 ;-----------------------------------------------------
-;       Ex6: Interrupts
+;       Ex7: Key Debouncing and Keyboard Scanning
 ;       Aqib Faruqui 
-;       Version 6.0
-;       25th March 2025
+;       Version 7.0
+;       3rd April 2025
 ;
-; This programme uses timer interrupts, no interrupt service routine (for ex7!)
+; This programme ...
 ;
 ; Known bugs: 
 ;
 ; Questions: 
-;       1. Bad practice to write in whole byte for RS from user mode
-;       2. Use a2 for delay or push/pop function parameter
-;       3. Where to LW lcd_port for clear screen ECALL
-;       4. Where to keep count if used in function argument/returns but also used across whole programme
-;       5. Use CSRW or CSRS in setting CSR register bits
+;       1. Use a2 for delay or push/pop function parameter
+;       2. Where to LW lcd_port for clear screen ECALL
+;       3. Use CSRW or CSRS in setting CSR register bits
+;       4. Better to separately clear and set two bits or write both at same time in LCD
+;       5. Delay calculations
 ;
 ;-----------------------------------------------------
 
 ; ================================== Initialisation ===================================
 
+        INCLUDE ../header.s
         ORG 0
         J initialisation
-        
-        led_port                DEFW    0x0001_0000
-        lcd_port                DEFW    0x0001_0100
-        timer_port              DEFW    0x0001_0200
-        pio_port                DEFW    0x0001_0300
-        interrupt_port          DEFW    0x0001_0400
-
 
 ; ================================== Machine Tables ====================================
 
@@ -39,7 +33,14 @@
                                 DEFW    0x0000_0000    
                                 DEFW    0x0000_0000    
                                 DEFW    0x0000_0000
-                                DEFW    ecallHandler            
+                                DEFW    ecallHandler    
+                                DEFW    0x0000_0000    
+                                DEFW    0x0000_0000    
+                                DEFW    0x0000_0000    
+                                DEFW    0x0000_0000       
+                                DEFW    0x0000_0000    
+                                DEFW    0x0000_0000    
+                                DEFW    0x0000_0000         
 
         interrupt_table         DEFW    0x0000_0000    
                                 DEFW    0x0000_0000    
@@ -55,11 +56,9 @@
                                 DEFW    mExtIntHandler    
 
         ecall_table             DEFW    writeLCD
-                                DEFW    writeString
-                                DEFW    buttonIndef
-                                DEFW    buttonCheck
                                 DEFW    timerStart
                                 DEFW    timerCheck
+                                DEFW    extButtonCheck
 
        ; mExtInt_table           DEFW    
 
@@ -74,8 +73,10 @@ initialisation: LA   sp, machine_stack
                 LA   t0, mhandler               
                 CSRW MTVEC, t0                  ; Initialise trap handler address
                 LI   t0, 0x0001_0400            ; Load interrupt controller base address
-                LI   t1, 0x10                   ; Enable timer interrupt (bit 4 & 5)
-                SW   t1, 4[t0]                  ; Write to interrupt controller
+                LI   t1, 0x10                   ; Timer interrupt (bit 4)
+                SW   t1, 4[t0]                  ; Write enable to interrupt controller
+                LI   t1, 0                      ; Timer to level sensitive mode
+                SW   t1, 12[t0]                 ; Set mode in interrupt controller
                 CSRW MSCRATCH, sp               ; Save machine stack pointer
                 LA   sp, user_stack             ; Load user stack pointer
                 LA   ra, user                   ; Load user space base address 
@@ -130,22 +131,26 @@ mhandler:       CSRRW sp, MSCRATCH, sp          ; Save user sp, get machine sp
 ;-----------------------------------------------------
 ;       Function: ECALL handler
 ;          param: a7 = ECALL number
-;         return: _
+;         return: a0 = -1 for Invalid ECALL
 ;-----------------------------------------------------
 ecallHandler:   ADDI sp, sp, -4
                 SW   ra, [sp]
 
+                LI   t0, NUM_ECALLS             ; Load number of ECALLs
+                BGEU a7, t0, invalid_ecall      ; If a7 < 0 or a7 >= NUM_ECALLS, return
+
                 LA   t0, ecall_table            ; Point to ECALL jump table
-                SLLI a7, a7, 2                  ; Multiply ECALL index by 4 to index words
-                ADD  t0, t0, a7                 ; Calculate table entry address
+                SLLI t1, a7, 2                  ; Multiply ECALL index by 4 to index words
+                ADD  t0, t0, t1                 ; Calculate table entry address
                 LW   t0, [t0]                   ; Load target address
-                LA   ra, ecallHandler_exit      ; Store return address 
+                LA   ra, ecall_exit             ; Store return address 
                 JR   t0                         ; Jump
 
-                ecallHandler_exit:
-                LW   ra, [sp]
-                ADDI sp, sp, 4
-                RET
+        invalid_ecall:  LI   a0, -1             ; Set error return value
+
+        ecall_exit:     LW   ra, [sp]
+                        ADDI sp, sp, 4
+                        RET
 
 ;-----------------------------------------------------
 ;       Function: Machine External Interrupt Handler
@@ -164,69 +169,61 @@ mExtIntHandler: ADDI sp, sp, -4
 
 ;-----------------------------------------------------
 ;       Function: Delay
-;          param: a2 = Delay count
+;          param: a1 = Delay count
 ;         return: _
 ;-----------------------------------------------------
-delay:  ADDI a2, a2, -1
-        BNE  zero, a2, delay
+delay:  ADDI a1, a1, -1
+        BNEZ a1, delay
         RET
 
 
 ;-----------------------------------------------------
 ;       Function: ECALL 0
-;                 Writes command or character to LCD
-;          param: a0 = Control(0)/Data(1) a1 = Character ASCII
+;                 Writes command/character to LCD
+;          param: a0 = Character ASCII
 ;         return: _
 ;-----------------------------------------------------
 writeLCD:       ADDI sp, sp, -4
                 SW   ra, [sp]
+                LW   s0, LCD_BASE               ; Load LCD base address
+                
+                LI   t0, 0x0000_0200            ; Load bit for RS
+                SW   t0, LCD_CLEAR[s0]          ; Clear RS to read control byte (RS = 0)
+                LI   t0, 0x0000_0900            ; Load bits for backlight and R/W
+                SW   t0, LCD_SET[s0]            ; Set backlight and data bus direction to read LCD controller (R/W = 1)
 
-                LW   s1, lcd_port
+        idle:           LI   t0, 0x0000_0400            ; Load data bus bit
+                        SW   t0, LCD_SET[s0]            ; Enable data bus (E = 1)
+                        LI   a1, 5                      ; Delay to stretch pulse width (min 20 cycles)
+                        JAL  delay
+                        
+                        LBU  t1, LCD_DATA[s0]           ; Read LCD data 
+                        ANDI t1, t1, 0b10000000         ; Isolate LCD status byte
 
-                ; Step 1: Set data bus direction to read LCD controller
-                LI   t0, 0b00001001
-                SB   t0, 1[s1]
-
-                ; Step 2: Enable data bus
-                idle    XORI t0, t0, 0b00000100
-                        SB   t0, 1[s1]             
-
-                        ; Step 2a: Delay to stretch pulse width (min 20 cycles)
-                        LI   a2, 20
+                        LI   t0, 0x0000_0400            ; Load data bus bit
+                        SW   t0, LCD_CLEAR[s0]          ; Disable data bus (E = 0)
+                        LI   a1, 12                      ; Delay to separate enable pulses (min 48 cycles)
                         JAL  delay
 
-                        ; Step 3: Read LCD status byte into t1
-                        LBU  t1, [s1]
-                        ANDI t1, t1, 0b10000000
+                        BNEZ t1, idle                   ; Idle while status byte is low (display controller is busy)                   
 
-                        ; Step 4: Disable data bus
-                        XORI t0, t0, 0b00000100
-                        SB   t0, 1[s1] 
+                LI   t0, 0x0000_0100            ; Load bit for R/W
+                SW   t0, LCD_CLEAR[s0]          ; Clear R/W bit to set data bus direction to write to LCD 
+                
+                LI   t0, 0x20                   ; Barrier betweeen control/data ASCII characters
+                BLT  a0, t0, skipUpdateRS       ; Characters < 0x20 should keep RS = 0 to write control byte
+                LI   t0, 0x0000_0200            ; Load bit for RS
+                SW   t0, LCD_SET[s0]            ; Set RS to write data byte
 
-                        ; Step 5: Delay to separate enable pulses (min 48 cycles)
-                        LI   a2, 48
-                        JAL  delay
+        skipUpdateRS:   SB   a0, LCD_DATA[s0]           ; Output parameter byte onto data bus
 
-                        ; Step 6: Idle for longer if status byte was high
-                        BNEZ t1, idle
-
-                ; Step 7: Set data bus direction and RS to write control/data byte to LCD
-                SB   a0, 1[s1]
-
-                ; Step 8: Output parameter byte onto data bus
-                SB   a1, [s1]
-
-                ; Step 9: Enable data bus
-                XORI a0, a0, 0b00000100
-                SB   a0, 1[s1]
-
-                ; Step 9a: Delay to streth pulse width (min 20 cycles)
-                LI   a2, 20
+                LI   t0, 0x0000_0400            ; Load data bus bit
+                SW   t0, LCD_SET[s0]            ; Enable data bus (E = 1)
+                LI   a1, 20                     ; Delay to stretch pulse width (min 20 cycles)
                 JAL delay
-
-                ; Step 10: Disable data bus
-                XORI a0, a0, 0b00000100
-                SB   a0, 1[s1]
+                
+                LI   t0, 0x0000_0400            ; Load data bus bit
+                SW   t0, LCD_CLEAR[s0]          ; Disable data bus (E = 0)
 
                 LW   ra, [sp]
                 ADDI sp, sp, 4
@@ -235,95 +232,50 @@ writeLCD:       ADDI sp, sp, -4
 
 ;-----------------------------------------------------
 ;       Function: ECALL 1
-;                 Calls writeLCD on each character of a string
-;          param: a1 = String Pointer
-;         return: _
-;-----------------------------------------------------
-writeString:    ADDI sp, sp, -8                 ; 1. Push working registers
-                SW   a1, 4[sp]                  ;      - Push string pointer
-                SW   ra, [sp]                   ;      - Push return address
-                MV   s0, a1                     ; 2. Move pointer to local register
-                J    writeStr1
-
-                writeStrLoop:
-                        CALL writeLCD                  
-                        ADDI s0, s0, 1                  ; Increment string pointer
-
-                writeStr1:
-                        LB   a1, [s0]                   ; Load next character
-                        BNEZ a1, writeStrLoop           ; Write char if string pointer not at \0
-
-                        LW   ra, [sp]
-                        LW   a1, 4[sp]
-                        ADDI sp, sp, 8
-                        RET
-
-
-;-----------------------------------------------------
-;       Function: ECALL 2
-;                 Waits indefinitely for button press
-;          param: a0 = Button Number (0x01 -> SW1, 0x02 -> SW2, 0x04 -> SW3, 0x08 -> SW4)
-;         return: _
-;-----------------------------------------------------
-buttonIndef:    LW   s0, led_port               ; Load LED port
-        
-        indefStart:     LBU  t0, 1[s0]                  ; Read button inputs
-                        BNE  t0, a0, indefStart         ; Wait for button press
-                
-                RET
-
-
-;-----------------------------------------------------
-;       Function: ECALL 3
-;                 Checks for button press
-;          param: a0 = Button Number (0x01 -> SW1, 0x02 -> SW2, 0x04 -> SW3, 0x08 -> SW4)
-;         return: a0 = 0 if button pressed, unchanged if not
-;-----------------------------------------------------
-buttonCheck:    LW   s0, led_port               ; Load LED port
-                LBU  t0, 1[s0]                  ; Read button inputs
-                BNE  t0, a0, buttonExit         ; Check button press
-
-                SUB  a0, a0, a0                 ; a0 = 0 for successful button press
-
-        buttonExit:     RET
-
-
-;-----------------------------------------------------
-;       Function: ECALL 4
 ;                 Starts 1 second timer
 ;          param: _
 ;         return: _
 ;-----------------------------------------------------
-timerStart:     LW   s0, timer_port
-                LI   t0, 0x000F4240
-                SW   t0, 4[s0]                  ; Set limit to 1 second
+timerStart:     LW   s0, TIMER_BASE
+                LI   t0, 1000000
+                SW   t0, TIMER_LIMIT[s0]        ; Set limit to 1 second
                 LI   t0, 0x00000000B
-                SW   t0, 20[s0]                 ; Turn on counter enable, modulus and interrupt control bits
+                SW   t0, TIMER_SET[s0]          ; Turn on counter enable, modulus and interrupt control bits
                 RET
 
 
 ;-----------------------------------------------------
-;       Function: ECALL 5
+;       Function: ECALL 2
 ;                 Checks timer completion
 ;          param: _
 ;         return: a0 = 0 if timer complete, 1 otherwise
 ;-----------------------------------------------------
-timerCheck:     LW   s0, timer_port
-                LW   t0, 12[s0]                 ; Load status register
+timerCheck:     LW   s0, TIMER_BASE
+                LW   t0, TIMER_STATUS[s0]       ; Load status register
                 LI   a0, 1                      ; Maintained if timer incomplete
                 BGEZ t0, timerExit              ; Check if sticky bit set
 
                 LI   t0, 0x80000000
-                SW   t0, 16[s0]                 ; Clear sticky bit
+                SW   t0, TIMER_CLEAR[s0]        ; Clear sticky bit
                 LI   a0, 0                      ; Timer complete
                 
         timerExit:      RET
 
 
+;-----------------------------------------------------
+;       Function: ECALL 3
+;                 Check button press from external keyboard
+;          param: _
+;         return: _
+;-----------------------------------------------------
+extButtonCheck: LI   s0, PIO_BASE               ; Load PIO base address
+                LW   t0, PIO_DATA[s0]           ; Read PIO data register
+                
+
 ; ================================= Machine Stack Space ================================
 
 ORG 0x0000_0500
-DEFS 0x200
+DEFS 0x1024
 machine_stack:
 
 
@@ -332,120 +284,15 @@ machine_stack:
 ORG 0x0004_0000
 user: J main
 
-;-----------------------------------------------------
-;       Function: Prints 4 digit hex integer to LCD
-;          param: a0 = 4 digit number in BCD
-;         return: _
-;-----------------------------------------------------
-printHex:       ADDI sp, sp, -4
-                SW   ra, [sp]
-
-                MV   s0, a0                             ; Save input
-                SRLI a0, a0, 12                         ; Shift first digit into range
-                JAL printHex4                           ; Print first digit
-                
-                MV   a0, s0                             ; Restore saved input
-                SRLI a0, a0, 8                          ; Shift second digit into range
-                JAL printHex4                           ; Print second digit
-
-                MV   a0, s0                             ; Restore saved input
-                SRLI a0, a0, 4                          ; Shift third digit into range
-                JAL printHex4                           ; Print third digit
-
-                MV   a0, s0                             ; Restore saved input
-                JAL printHex4                           ; Print fourth digit (already in range)
-                J printHexExit
-
-        printHex4:      ANDI a0, a0, 0x000F                     ; Clear all bits except bottom 4
-                        ADDI a0, a0, 0x30                       ; Add '0' to convert to ASCII
-                        MV   a1, a0
-                        LI   a0, 0b00001010                     
-                        LI   a7, 0                              ; ECALL 0 prints to LCD
-                        ECALL
-                        RET
-
-        printHexExit:   MV   a0, s0                             ; Restore caller state
-                        LW   ra, [sp]
-                        ADDI sp, sp, 4
-                        RET
-
-;-----------------------------------------------------
-;       Function: Increments 4 digit BCD value, 9999 loops back to 0000
-;          param: a0 = 4 digit number in BCD
-;         return: a0 = Input + 1 adjusted for BCD
-;-----------------------------------------------------
-incrementBCD:   ADDI a0, a0, 1                          ; Increment input
-                LI   t0, 0b0000_0000_0000_1010          ; 10 = Mask for overflowing BCD digit (>9)
-                AND  t1, a0, t0                         ; Check for overflowing least significant digit
-                LI   t2, 0                              ; Initialise propagation counter (used to restore shifted value later)
-                BNE  t0, t1, postpropagate              ; Propagate carry to next digit
-        
-        propagate:      ADDI t2, t2, 4                          ; Increment propagation counter (adjusted for bits shifted)
-                        ADDI a0, a0, 6                          ; Add 6 to propagate carry
-                        SRLI a0, a0, 4                          ; Shift away lowest digit
-                        AND  t1, a0, t0                         ; Check for overflowing next digit
-                        BEQ  t0, t1, propagate                  ; Propagate carry again
-
-        postpropagate:  SLL  a0, a0, t2                         ; Restore propagation right shifts
-                        RET
-
-;-----------------------------------------------------;
-;                                                     ;
-;                    Main programme                   ;
-;                                                     ; 
-;                   SW1             SW2               ;
-;         -->{Start}---->{Increment}--->{Pause}       ;
-;             ^                            |          ;
-;             |____________________________|          ;
-;                           SW3                       ;
-;                                                     ;
-;-----------------------------------------------------;
-
 main:           LI   a0, 0b00001000                     ; Setting LCD to write control byte 
                 LI   a1, 0x01                           ; Clear screen control byte
                 LI   a7, 0                              ; ECALL 0 clears screen
                 ECALL                           
 
-        start:          LI   a0, 0                              ; Initialise counter
-                        CALL printHex                           ; Print starting 0
-                        MV   s0, a0                             ; Save counter in s0
-                        LI   a0, 0x01                           ; Load button SW1 (start button)
-                        LI   a7, 2                              ; ECALL 2 waits indefinitely for button press
-                        ECALL
-
-        increment:      LI   a7, 4                              ; ECALL 4 starts timer
-                        ECALL
-
-                timerWait:      LI   a0, 0x02                           ; Load button SW2 (pause button)
-                                LI   a7, 3                              ; ECALL 3 checks button press and returns
-                                ECALL
-                                BEQZ a0, pause                          ; If SW2 pressed, move to pause state
-                                LI   a7, 5                              ; ECALL 5 checks timer completion
-                                ECALL
-                                BNEZ a0, timerWait                      ; Continue to check pause and timer completion until timer complete
-
-                        MV   a0, s0                             ; Load counter
-                        CALL incrementBCD                       ; Increment counter
-                        MV   s0, a0                             ; Save counter
-                        LI   a0, 0b00001000
-                        LI   a1, 0x01
-                        LI   a7, 0                              ; ECALL 0 clears screen
-                        ECALL
-                        MV   a0, s0                             ; Load counter
-                        CALL printHex                           ; Print 4 digit counter 
-                        
-                        J increment                             ; Loop back to start of increment state
-
-        pause:          LI   a0, 0x04                           ; Load button SW3 (reset button)
-                        LI   a7, 2                              ; ECALL 2 waits indefinitely for button press
-                        ECALL
-
-                J main                                  ; Reset button press restarts main loop
-
 stop:   J    stop
 
 ; =================================== User Stack Space ================================= 
 
-ORG 0x0004_0500
-DEFS 0x200
+ORG 0x0004_1000
+DEFS 0x1024
 user_stack:
