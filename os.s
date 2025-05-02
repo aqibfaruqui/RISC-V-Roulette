@@ -1,12 +1,12 @@
 ;-----------------------------------------------------
-;       Ex7: Key Debouncing and Keyboard Scanning
+;       Ex9: Music Virtual Machine
 ;       Aqib Faruqui 
-;       Version 7.8
-;       3rd April 2025
+;       Version 9.0
+;       1st May 2025
 ;
 ; This programme ...
 ;
-; Known bugs: FIX DEBOUNCE KEYPAD STATE WRITE BACK
+; Known bugs: preserve entire state on interrupts
 ;
 ; Questions: 
 ;       1. Use a2 for delay or push/pop function parameter
@@ -30,8 +30,8 @@
         ORG 0
         J initialisation
 
-; ================================== Machine Tables ====================================
-
+; ================================== Machine Tables ===================================
+tables:
         exception_table         DEFW    0x0000_0000     
                                 DEFW    0x0000_0000    
                                 DEFW    0x0000_0000    
@@ -66,7 +66,7 @@
                                 DEFW    timerStart
                                 DEFW    timerCheck
 
-       mExtInt_table            DEFW    0x0000_0000
+        mExtInt_table           DEFW    0x0000_0000
                                 DEFW    0x0000_0000
                                 DEFW    0x0000_0000
                                 DEFW    0x0000_0000
@@ -93,6 +93,11 @@ initialisation: LA   sp, machine_stack
                 SW   t1, INTERRUPT_ENABLES[t0]  ; Enable timer interrupts
                 LI   t1, 0                      ; Timer to level sensitive mode
                 SW   t1, INTERRUPT_MODE[t0]     ; Set mode in interrupt controller
+
+                LI   t0, SYSTEM_BASE            ; Load system controller base address
+                LI   t1, 0xC0                   ; Buzzer Bits (bits 6-7)
+                SW   t1, SYSTEM_PINS[t0]        ; Redirect PIO pins to buzzer I/O function
+
                 LI   t0, 0x800                  ; Load machine external interrupt bit (bit 11)
                 CSRW MIE, t0                    ; Enable machine external interrupts in MIE
 
@@ -300,15 +305,6 @@ keypad_state:   DEFB    0, 0, 0, 0
                 DEFB    0, 0, 0, 0
                 DEFB    0, 0, 0, 0
 
-printChar:      ADDI sp, sp, -4
-                SW   ra, [sp]
-                
-                LBU a0, [t3]
-                CALL writeLCD
-
-                LW   ra, [sp]
-                ADDI sp, sp, 4
-
 timerISR:       ADDI sp, sp, -4
                 SW   ra, [sp]
                 
@@ -433,6 +429,8 @@ machine_stack:
 ORG 0x0004_0000
 user: J main
 
+playNote: 
+
 main:           LI   a0, 0x01                   ; Clear screen control byte
                 LI   a7, 0                      ; ECALL 0 clears screen
                 ECALL
@@ -440,9 +438,46 @@ main:           LI   a0, 0x01                   ; Clear screen control byte
                 LI   a7, 1                      ; ECALL 1 starts 10ms timer
                 ECALL
 
-        scan:           J scan
+        ; LI   t0, 0xFF
+        ; LA   t1, tune1 
+        ; loop
+        ;   LBU  a0, t1
+        ;   BEQ  a0, t0, enabled    ; end of file
+        ;   ADDI t1, t1, 1
+        ;   LBU  a1, t1
+        ;   ADDI t1, t1, 1
+        ;   CALL playNote
+        ;   J loop  
 
 stop:   J    stop
+
+
+; ===================================== Music Input ==================================== 
+
+; INCLUDE tune1.s
+
+tune1	    defb	 8, 7
+            defb	 0, 1
+            defb	 8, 8
+            defb	 9, 8
+            defb	 7, 12
+            defb	 8, 4
+            defb	 9, 8
+
+            defb	10, 7
+            defb	 0, 1
+            defb	10, 8
+            defb	11, 8
+            defb	10, 12
+            defb	 9, 4
+            defb	 8, 8
+
+            defb	 9, 8
+            defb	 8, 8
+            defb	 7, 8
+            defb	 8, 16
+
+            defb	 0xFF
 
 ; =================================== User Stack Space ================================= 
 
