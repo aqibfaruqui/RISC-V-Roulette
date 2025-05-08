@@ -1,7 +1,7 @@
 ;-----------------------------------------------------
 ;       Ex9: Music Virtual Machine
 ;       Aqib Faruqui 
-;       Version 9.0
+;       Version 9.2
 ;       1st May 2025
 ;
 ; This programme ...
@@ -64,7 +64,8 @@ tables:
 
         ecall_table             DEFW    writeLCD
                                 DEFW    timerStart
-                                DEFW    timerCheck
+                                DEFW    getCharacter
+                                DEFW    buttonCheck
 
         mExtInt_table           DEFW    0x0000_0000
                                 DEFW    0x0000_0000
@@ -80,7 +81,7 @@ initialisation: LA   sp, machine_stack
                 LI   t0, 0x0000_1800            ; Load MPP[1:0] mask (previous priority)
                 CSRC MSTATUS, t0                ; Set previous priority mode to user (Clearing MPP[1:0])
                 LI   t0, 0x80                   ; Load MPIE bit (bit 7)
-                CSRW MSTATUS, t0                ; Set previous MIE to enable interrupts
+                CSRS MSTATUS, t0                ; Set previous MIE to enable interrupts
                 LA   t0, mhandler               
                 CSRW MTVEC, t0                  ; Initialise trap handler address
                 CSRW MSCRATCH, sp               ; Save machine stack pointer
@@ -89,14 +90,14 @@ initialisation: LA   sp, machine_stack
                 CSRW MEPC, ra                   ; Set previous PC to user space
 
                 LI   t0, INTERRUPT_BASE         ; Load interrupt controller base address
-                LI   t1, 0x10                   ; Timer interrupt (bit 4)
-                SW   t1, INTERRUPT_ENABLES[t0]  ; Enable timer interrupts
+                LI   t1, 0x10                   ; Timer interrupt (bits 4)
+                SW   t1, INTERRUPT_ENABLES[t0]  ; Enable SW1 and timer interrupts
                 LI   t1, 0                      ; Timer to level sensitive mode
                 SW   t1, INTERRUPT_MODE[t0]     ; Set mode in interrupt controller
 
-                LI   t0, SYSTEM_BASE            ; Load system controller base address
-                LI   t1, 0xC0                   ; Buzzer Bits (bits 6-7)
-                SW   t1, SYSTEM_PINS[t0]        ; Redirect PIO pins to buzzer I/O function
+                ;LI   t0, SYSTEM_BASE            ; Load system controller base address
+                ;LI   t1, 0xC0                   ; Buzzer Bits (bits 6-7)
+                ;SW   t1, SYSTEM_PINS[t0]        ; Redirect PIO pins to buzzer I/O function
 
                 LI   t0, 0x800                  ; Load machine external interrupt bit (bit 11)
                 CSRW MIE, t0                    ; Enable machine external interrupts in MIE
@@ -115,33 +116,61 @@ initialisation: LA   sp, machine_stack
 ;         return: _
 ;-----------------------------------------------------
 mhandler:       CSRRW sp, MSCRATCH, sp          ; Save user sp, get machine sp
-                ADDI  sp, sp, -8                ;
-                SW    s0, 4[sp]                 ; Push working registers onto machine stack
+                ADDI  sp, sp, -16               ;
+                SW    t1, 12[sp]                ;
+                SW    t0, 8[sp]                 ; Push working registers onto machine stack
+                SW    s0, 4[sp]                 ; 
                 SW    ra, [sp]                  ;
-                CSRR  t1, MCAUSE                ; Find trap cause (e.g. ECALL = 8)
-                BGEZ  t1, exceptions            ; Branch if trap is an exception, otherwise an interrupt
-                ANDI  t1, t1, 0x000F            ; Clear upper bits (needed?)
+                CSRR  t0, MCAUSE                ; Find trap cause (e.g. ECALL = 8)
+                BGEZ  t0, exceptions            ; Branch if trap is an exception, otherwise an interrupt
+                ANDI  t0, t0, 0x000F            ; Clear upper bits
 
-        interrupts:     LA    t0, interrupt_table       ; Point to interrupt jump table
-                        SLLI  t1, t1, 2                 ; Multiply MCAUSE by 4 to index words
-                        ADD   t0, t0, t1                ; Calculate interrupt table entry address
-                        LW    t0, [t0]                  ; Load target address
+        interrupts:     ADDI  sp, sp, -36               ;
+                        SW    t2, 32[sp]                ;
+                        SW    t3, 28[sp]                ;
+                        SW    t4, 24[sp]                ;
+                        SW    t5, 20[sp]                ; Save ENTIRE state on interrupt
+                        SW    t6, 16[sp]                ; (Pushing all other used registers)
+                        SW    a0, 12[sp]                ;
+                        SW    a1, 8[sp]                 ;
+                        SW    a2, 4[sp]                 ;
+                        SW    a7, [sp]                  ;
+        
+                        SLLI  t0, t0, 2                 ; Multiply MCAUSE by 4 to index words
+                        LA    t1, interrupt_table       ; Point to interrupt jump table
+                        ADD   t1, t1, t0                ; Calculate interrupt table entry address
+                        LW    t1, [t1]                  ; Load target address
                         LA    ra, interrupt_exit        ; Store return address
-                        JR    t0                        ; Jump
+                        JR    t1                        ; Jump
 
-        exceptions:     LA    t0, exception_table       ; Point to exception jump table
-                        SLLI  t1, t1, 2                 ; Multiply MCAUSE by 4 to index words
-                        ADD   t0, t0, t1                ; Calculate exception table entry address
-                        LW    t0, [t0]                  ; Load target address
+        exceptions:     SLLI  t0, t0, 2                 ; Multiply MCAUSE by 4 to index words
+                        LA    t1, exception_table       ; Point to exception jump table
+                        ADD   t1, t1, t0                ; Calculate exception table entry address
+                        LW    t1, [t1]                  ; Load target address
                         LA    ra, exception_exit        ; Store return address
-                        JR    t0                        ; Jump
+                        JR    t1                        ; Jump
 
                 exception_exit: CSRRW t0, MEPC, t0              ;
                                 ADDI  t0, t0, 4                 ; Move MEPC to next instruction for exceptions
-                                CSRRW t0, MEPC, t0              ; Ignore for interrupts 
-                interrupt_exit: LW   ra, [sp]                   ;
-                                LW   s0, 4[sp]                  ; Pop working registers from machine stack
-                                ADDI sp, sp, 8                  ;
+                                CSRRW t0, MEPC, t0              ; Ignore for interrupts
+                                J trap_exit                     ;
+                
+                interrupt_exit: LW   a7, [sp]                   ;
+                                LW   a2, 4[sp]                  ;
+                                LW   a1, 8[sp]                  ;
+                                LW   a0, 12[sp]                 ;
+                                LW   t6, 16[sp]                 ; Save ENTIRE state on interrupt
+                                LW   t5, 20[sp]                 ; (Popping all other used registers)
+                                LW   t4, 24[sp]                 ;
+                                LW   t3, 28[sp]                 ;
+                                LW   t2, 32[sp]                 ;
+                                ADDI sp, sp, 36                 ;
+                
+                trap_exit:      LW   ra, [sp]                   ;
+                                LW   s0, 4[sp]                  ; 
+                                LW   t0, 8[sp]                  ; Pop working registers from machine stack
+                                LW   t1, 12[sp]                 ;
+                                ADDI sp, sp, 16                 ;
                                 CSRRW sp, MSCRATCH, sp          ; Save machine sp, get user sp
                                 MRET
 
@@ -187,10 +216,12 @@ delay:  ADDI a1, a1, -1
 ;          param: a0 = Character ASCII
 ;         return: _
 ;-----------------------------------------------------
-writeLCD:       ADDI sp, sp, -4
-                SW   ra, [sp]
+writeLCD:       ADDI  sp, sp, -12
+                SW    t0, 8[sp]
+                SW    t1, 4[sp]
+                SW    ra, [sp]                
+
                 LI   s0, LCD_BASE               ; Load LCD base address
-                
                 LI   t0, 0x0000_0200            ; Load bit for RS
                 SW   t0, LCD_CLEAR[s0]          ; Clear RS to read control byte (RS = 0)
                 LI   t0, 0x0000_0900            ; Load bits for backlight and R/W
@@ -223,20 +254,22 @@ writeLCD:       ADDI sp, sp, -4
 
                 LI   t0, 0x0000_0400            ; Load data bus bit
                 SW   t0, LCD_SET[s0]            ; Enable data bus (E = 1)
-                LI   a1, 20                     ; Delay to stretch pulse width (min 20 cycles)
+                LI   a1, 5                      ; Delay to stretch pulse width (min 20 cycles)
                 JAL delay
                 
                 LI   t0, 0x0000_0400            ; Load data bus bit
                 SW   t0, LCD_CLEAR[s0]          ; Disable data bus (E = 0)
 
                 LW   ra, [sp]
-                ADDI sp, sp, 4
+                LW   t1, 4[sp]
+                LW   t0, 8[sp]
+                ADDI sp, sp, 12
                 RET
 
 
 ;-----------------------------------------------------
 ;       Function: ECALL 1
-;                 Starts 1 second timer
+;                 Starts 1 second timer for keypad scanning
 ;          param: _
 ;         return: _
 ;-----------------------------------------------------
@@ -250,21 +283,48 @@ timerStart:     LI   s0, TIMER_BASE
 
 ;-----------------------------------------------------
 ;       Function: ECALL 2
-;                 Checks timer completion
+;                 Get character input from timer ISR queue
 ;          param: _
-;         return: a0 = 0 if timer complete, 1 otherwise
+;         return: a0 = Dequeued keypad input ASCII (-1 for empty queue)
 ;-----------------------------------------------------
-timerCheck:     LI   s0, TIMER_BASE
-                LW   t0, TIMER_STATUS[s0]       ; Load status register
-                LI   a0, 1                      ; Maintained if timer incomplete
-                BGEZ t0, timerExit              ; Check if sticky bit set
+getCharacter:   ADDI sp, sp, -12
+                SW   t0, 8[sp]
+                SW   t1, 4[sp]
+                SW   ra, [sp]
 
-                LI   t0, 0x80000000
-                SW   t0, TIMER_CLEAR[s0]        ; Clear sticky bit
-                LI   a0, 0                      ; Timer complete
-                
-        timerExit:      RET
-                
+                LA   t0, keypad_queue           ; Keypad input queue base address
+                LBU  t1, KP_QUEUE_SIZE[t0]      ; Current size of queue i.e. number of characters
+                LI   a0, -1                     ; Dequeue error value
+                BEQZ t1, queueEmpty             ; Catch queueEmpty
+
+                ADDI t1, t1, -1
+                SB   t1, KP_QUEUE_SIZE[t0]      ; Decrement queue size
+
+                LBU  t1, KP_QUEUE_HEAD[t0]      ; Head index in queue
+                ADD  t0, t0, t1                 ; Head address
+                LBU  a0, [t0]                   ; Dequeue keypad input ASCII
+
+        queueEmpty:     LW   ra, [sp]
+                        LW   t1, 4[sp]
+                        LW   t0, 8[sp]
+                        ADDI sp, sp, 12
+                        RET
+
+
+;-----------------------------------------------------
+;       Function: ECALL 3
+;                 Checks for button press
+;          param: a0 = Button Number (0x01 -> SW1, 0x02 -> SW2, 0x04 -> SW3, 0x08 -> SW4)
+;         return: a0 = 0 if button pressed, unchanged if not
+;-----------------------------------------------------
+buttonCheck:    LI   t0, LED_BASE               ; Load LED port
+                LBU  t0, BUTTONS[t0]            ; Read button inputs
+                BNE  t0, a0, buttonExit         ; Check button press
+
+                LI   a0, 0                      ; a0 = 0 for successful button press
+
+        buttonExit:     RET
+
 
 ;-----------------------------------------------------
 ;       Function: Machine External Interrupt Handler
@@ -293,9 +353,9 @@ mExtIntHandler: ADDI sp, sp, -4
                 RET
                 
 ;-----------------------------------------------------
-;       Function: Scan and debounce keypad 
-;          param: _
-;         return: _
+;
+;         Timer ISR Helper functions & Data
+;       
 ;-----------------------------------------------------
 keypad_lookup:  DEFB    '#', '9', '6', '3'
                 DEFB    '0', '8', '5', '2'
@@ -305,6 +365,40 @@ keypad_state:   DEFB    0, 0, 0, 0
                 DEFB    0, 0, 0, 0
                 DEFB    0, 0, 0, 0
 
+keypad_queue:           DEFS    16              ; 16 Byte Queue
+                        DEFB    0               ; KP_QUEUE_SIZE
+                        DEFB    16              ; KP_QUEUE_CAPACITY
+                        DEFB    0               ; KP_QUEUE_HEAD
+                        ALIGN
+
+queuePush:      LA   t0, keypad_queue           ; Keypad input queue base address
+                LBU  t1, KP_QUEUE_CAPACITY[t0]  ; Max capacity of queue (16 bytes)
+                LBU  t2, KP_QUEUE_SIZE[t0]      ; Current size of queue i.e. number of characters
+                BEQ  t1, t2, queueFull          ; Catch queueFull
+
+                LBU  t1, KP_QUEUE_HEAD[t0]      ; Head of queue
+                ADD  t1, t1, t2                 ; Tail index = (head + size)
+                LBU  t2, KP_QUEUE_CAPACITY[t0]  ;               % capacity
+                REMU t1, t1, t2                 ;
+
+                LBU  t2, KP_QUEUE_SIZE[t0]      ;
+                ADDI t2, t2, 1                  ; Increment queue size 
+                SB   t2, KP_QUEUE_SIZE[t0]      ;
+
+                ADD  t1, t1, t0                 ; Tail address
+                SB   a0, [t1]                   ; Enqueue keypad input ASCII
+
+                RET
+
+queueFull:      J queueFull
+
+
+;-----------------------------------------------------
+;       Function: Timer ISR
+;                 Scan and debounce keypad, storing inputs in queue
+;          param: _
+;         return: _
+;-----------------------------------------------------
 timerISR:       ADDI sp, sp, -4
                 SW   ra, [sp]
                 
@@ -338,7 +432,7 @@ timerISR:       ADDI sp, sp, -4
                                 LI   a0, 1                      ; Compare against current key press status
                                 BNE  t6, a0, skipTo2            ; Skip print routine if last 1 needed for FF key state is not set
                                 LBU  a0, [t3]                   ; Else, load relevant character
-                                CALL writeLCD                   ;       and print to LCD
+                                CALL queuePush                  ;       and push to queue
 
                 skipTo2:        SLLI t5, t5, 1                  ; Shift rolling key state to make room to update 
                                 ANDI t6, t2, 1
@@ -357,7 +451,7 @@ timerISR:       ADDI sp, sp, -4
                                 LI   a0, 1                      ; Compare against current key press status
                                 BNE  t6, a0, skipTo3            ; Skip print routine if last 1 needed for FF key state is not set
                                 LBU  a0, [t3]                   ; Else, load relevant character
-                                CALL writeLCD                   ;       and print to LCD
+                                CALL queuePush                  ;       and push to queue
 
                 skipTo3:        SLLI t5, t5, 1                  ; Shift rolling key state to make room to update 
                                 ANDI t6, t2, 1
@@ -376,7 +470,7 @@ timerISR:       ADDI sp, sp, -4
                                 LI   a0, 1                      ; Compare against current key press status
                                 BNE  t6, a0, skipTo4            ; Skip print routine if last 1 needed for FF key state is not set
                                 LBU  a0, [t3]                   ; Else, load relevant character
-                                CALL writeLCD                   ;       and print to LCD
+                                CALL queuePush                  ;       and push to queue
 
                 skipTo4:        SLLI t5, t5, 1                  ; Shift rolling key state to make room to update 
                                 ANDI t6, t2, 1
@@ -395,7 +489,7 @@ timerISR:       ADDI sp, sp, -4
                                 LI   a0, 1                      ; Compare against current key press status
                                 BNE  t6, a0, skipToEnd          ; Skip print routine if last 1 needed for FF key state is not set
                                 LBU  a0, [t3]                   ; Else, load relevant character
-                                CALL writeLCD                   ;       and print to LCD
+                                CALL queuePush                  ;       and push to queue
 
                 skipToEnd:      SLLI t5, t5, 1                  ; Shift rolling key state to make room to update 
                                 ANDI t6, t2, 1
@@ -429,57 +523,122 @@ machine_stack:
 ORG 0x0004_0000
 user: J main
 
-playNote: 
+;-----------------------------------------------------
+;       Function: Prints string to LCD
+;          param: a0 = Pointer to string
+;         return: _
+;-----------------------------------------------------
+printString:
+        ADDI sp, sp, -4
+        SW   ra, [sp]                 
 
+        MV   s0, a0                     ; Move pointer to local register
+        J    printStr1
+
+        printStrLoop:
+                LI   a7, 0
+                ECALL                           ; ECALL 0 prints character to LCD             
+                ADDI s0, s0, 1                  ; Increment string pointer
+
+        printStr1:
+                LB   a0, [s0]                   ; Load next character
+                BNEZ a0, printStrLoop           ; Write char if string pointer not at \0
+
+                LW   ra, [sp]
+                ADDI sp, sp, 4
+                RET
+
+;-----------------------------------------------------;
+;                                                     ;
+;                       ROULETTE                      ;
+;                                                     ;
+;-----------------------------------------------------;
 main:           LI   a0, 0x01                   ; Clear screen control byte
                 LI   a7, 0                      ; ECALL 0 clears screen
                 ECALL
 
-                LI   a7, 1                      ; ECALL 1 starts 10ms timer
-                ECALL
+        start:          LA   a0, start_string           ; Pointer to start message
+                        CALL printString                ; Print start message to LCD
 
-        ; LI   t0, 0xFF
-        ; LA   t1, tune1 
-        ; loop
-        ;   LBU  a0, t1
-        ;   BEQ  a0, t0, enabled    ; end of file
-        ;   ADDI t1, t1, 1
-        ;   LBU  a1, t1
-        ;   ADDI t1, t1, 1
-        ;   CALL playNote
-        ;   J loop  
+                startButton:    LI   a0, 1
+                                LI   a7, 3
+                                ECALL
+                                BNEZ a0, startButton
+
+        placeBet:       LI   a0, 0x01                   ; Clear screen control byte
+                        LI   a7, 0                      ; ECALL 0 clears screen
+                        ECALL   
+        
+                        LI   a7, 1
+                        ECALL                           ; ECALL 1 starts timer for keypad scanning
+
+                                LI   s0, 0                      ; Initialising bet amount
+                                LI   t0, 10                     ; Multiply current bet by 10 to add each new digit
+                                LI   t1, 0x23                   ; ASCII for '#'
+                                LI   t2, 0x2A                   ; ASCII for '*'
+                                LI   t3, -1                     ; Get character null return
+
+                getBet:         LI   a7, 2
+                                ECALL                           ; ECALL 2 gets character from keypad input
+                                BEQ  a0, t1, chooseColour       ; '#' finalises bet
+                                BEQ  a0, t2, backspace          ; '*' backspace on bet amount
+                                BEQ  a0, t3, getBet             ; Repeat for no character return
+
+                                MUL  s0, s0, t0                 ; Multiply current bet by 10
+                                ADD  s0, s0, a0                 ; Add new digit
+                                LI   a7, 0
+                                ECALL                           ; Print new digit to LCD
+
+                                J getBet                        ; Continue keypad input until '#'
+
+                backspace:      NOP
+
+
+        chooseColour:   NOP
+                        NOP
+
+        rouletteSpin:   NOP
+                        NOP
 
 stop:   J    stop
 
 
-; ===================================== Music Input ==================================== 
+; ====================================== Input Data ==================================== 
 
-; INCLUDE tune1.s
+start_string    DEFB    "SW1 to start\0"
+ALIGN
 
-tune1	    defb	 8, 7
-            defb	 0, 1
-            defb	 8, 8
-            defb	 9, 8
-            defb	 7, 12
-            defb	 8, 4
-            defb	 9, 8
+choose          DEFB    "* = red  # = blk\0"
+ALIGN
 
-            defb	10, 7
-            defb	 0, 1
-            defb	10, 8
-            defb	11, 8
-            defb	10, 12
-            defb	 9, 4
-            defb	 8, 8
+roulette        DEFB    "00|32|15|19|04|21|02|25|17|34|06|27|13|36|11|30|08|23|10|05|24|16|33|01|20|14|31|09|22|18|29|07|28|12|35|03|26|"
+ALIGN
 
-            defb	 9, 8
-            defb	 8, 8
-            defb	 7, 8
-            defb	 8, 16
+tune1	    DEFB	 8, 7
+            DEFB	 0, 1
+            DEFB	 8, 8
+            DEFB	 9, 8
+            DEFB	 7, 12
+            DEFB	 8, 4
+            DEFB	 9, 8
 
-            defb	 0xFF
+            DEFB	10, 7
+            DEFB	 0, 1
+            DEFB	10, 8
+            DEFB	11, 8
+            DEFB	10, 12
+            DEFB	 9, 4
+            DEFB	 8, 8
+
+            DEFB	 9, 8
+            DEFB	 8, 8
+            DEFB	 7, 8
+            DEFB	 8, 16
+
+            DEFB	 0xFF
 
 ; =================================== User Stack Space ================================= 
 
+ALIGN
 DEFS 0x1024
 user_stack:
