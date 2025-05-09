@@ -40,10 +40,14 @@ reg  [15:0] counter;                                 /* Clock divider counter */
 reg  [31:0] buzzer;                                       /* Output to buzzer */
 reg         state;                                /* Oscilatting buzzer state */
 
+wire [31:0] timer2_data_out;
+wire        timer2_irq;
+
 assign stall_o    = cs_i   && 1'b0;          /* Unlikely to want to change these */
 assign abort_o    = {3{cs_i}} && 3'h0;     /* Aborts done at 'MMU' level already */
 assign LED_o      = 8'h00;                        /* Wire off the LED outputs    */
-assign irq_o[2:0] = 3'b000;           /* Potential interrupt requests (tied off) */
+assign irq_o[3:1] = 3'b000;           /* Potential interrupt requests (tied off) */
+assign irq_o[0]   = timer2_irq;
 
 always @ (posedge clk)                         /* Address bits hold           */
 if (cs_i && read_i) addr <= address_i[7:0];    /* Delay for next cycle        */
@@ -58,13 +62,6 @@ if (reset)
     counter <= 16'h0000_0000;
     buzzer <= 32'h0000_0000;
     state <= 1'h0;
-  end
-
-else if (address >= 32'h20100)
-  begin
-    
-
-    irq_o[0] = 1;
   end
 
 // Register updates
@@ -99,13 +96,23 @@ else
 
 always @ (*)                                   /* Read from selected register */
   begin
-    // case (addr[3:2])                /* Select (word) address here (later cycle) */
-    //   default: data_out = 32'hxxxx_xxxx; /* Guard against accidentally latching */
-    // endcase
-    if (freq != 0)
-      buzzer     = state ? 32'h0000_0040 : 32'h0000_0080;              /* Buzzer on */
-    else
-      buzzer     = 32'h0;                                             /* Buzzer off */
+    if (cs_i && read_i)
+      begin
+        case (addr[7:2])
+          6'h40: data_out = timer2_data_out;    /* Address 0x20100? */
+          default: 
+            begin
+              if (freq != 0)
+                data_out  = state ? 32'h0000_0040 : 32'h0000_0080;              /* Buzzer on */
+              else
+                data_out  = 32'h0;           /* Buzzer off */
+            end
+        endcase
+      end 
+      else
+        begin
+          data_out = 32'h0;
+        end          
   end
 
 // port_in                             /* Up to 32 potential inputs (unwired) */
@@ -114,7 +121,7 @@ assign port_out = buzzer;
    
 wire cs_timer = cs_i && (address_i >= 32'h20100);
 
-timer timer2    (.clk       (clk),                              /* Slave timer */
+timer timer2    (.clk      (clk),
                 .reset     (reset),
                 .cs_i      (cs_timer),
                 .read_i    (read_i),
@@ -125,9 +132,8 @@ timer timer2    (.clk       (clk),                              /* Slave timer *
                 .stall_o   (),
                 .abort_v_o (),
                 .data_in   (data_in),
-                .data_out  (data_out),        /* fix to not let buzzer just read out timer2 */
-                .ireq_o    (irq_o[0]));
-
+                .data_out  (timer2_data_out),
+                .ireq_o    (timer2_irq));
 
 endmodule  // user_periph
 
