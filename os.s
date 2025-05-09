@@ -63,8 +63,9 @@ tables:
                                 DEFW    mExtIntHandler    
 
         ecall_table             DEFW    writeLCD
-                                DEFW    timerStart
                                 DEFW    getCharacter
+                                DEFW    timerStart1
+                                DEFW    timerStart2
                                 DEFW    buttonCheck
 
         mExtInt_table           DEFW    0x0000_0000
@@ -269,20 +270,6 @@ writeLCD:       ADDI  sp, sp, -12
 
 ;-----------------------------------------------------
 ;       Function: ECALL 1
-;                 Starts 1 second timer for keypad scanning
-;          param: _
-;         return: _
-;-----------------------------------------------------
-timerStart:     LI   s0, TIMER_BASE
-                LI   t0, 1000
-                SW   t0, TIMER_LIMIT[s0]        ; Set limit to 1ms
-                LI   t0, 0x00000000B
-                SW   t0, TIMER_SET[s0]          ; Turn on counter enable, modulus and interrupt control bits
-                RET
-
-
-;-----------------------------------------------------
-;       Function: ECALL 2
 ;                 Get character input from timer ISR queue
 ;          param: _
 ;         return: a0 = Dequeued keypad input ASCII (-1 for empty queue)
@@ -312,7 +299,34 @@ getCharacter:   ADDI sp, sp, -12
 
 
 ;-----------------------------------------------------
+;       Function: ECALL 2
+;                 Starts 1 second timer for keypad scanning
+;          param: _
+;         return: _
+;-----------------------------------------------------
+timerStart1:    LI   s0, TIMER_BASE
+                LI   t0, 1000
+                SW   t0, TIMER_LIMIT[s0]        ; Set limit to 1ms
+                LI   t0, 0x00000000B
+                SW   t0, TIMER_SET[s0]          ; Turn on counter enable, modulus and interrupt control bits
+                RET
+
+
+;-----------------------------------------------------
 ;       Function: ECALL 3
+;                 Starts _ timer for roulette spin
+;          param: _
+;         return: _
+;-----------------------------------------------------
+timerStart2:    ;LI   s0, TIMER_BASE
+                ;LI   t0, 1000
+                ;SW   t0, TIMER_LIMIT[s0]        ; Set limit to 1ms
+                ;LI   t0, 0x00000000B
+                ;SW   t0, TIMER_SET[s0]          ; Turn on counter enable, modulus and interrupt control bits
+                ;RET
+
+;-----------------------------------------------------
+;       Function: ECALL 4
 ;                 Checks for button press
 ;          param: a0 = Button Number (0x01 -> SW1, 0x02 -> SW2, 0x04 -> SW3, 0x08 -> SW4)
 ;         return: a0 = 0 if button pressed, unchanged if not
@@ -576,19 +590,18 @@ main:           LI   a0, 0x01                   ; Clear screen control byte
                                 LI   t0, 10                     ; Multiply current bet by 10 to add each new digit
                                 LI   t1, 0x23                   ; ASCII for '#'
                                 LI   t2, 0x2A                   ; ASCII for '*'
-                                LI   t3, -1                     ; Get character null return
 
                 getBet:         LI   a7, 2
                                 ECALL                           ; ECALL 2 gets character from keypad input
                                 BEQ  a0, t1, chooseColour       ; '#' finalises bet
                                 BEQ  a0, t2, backspace          ; '*' backspace on bet amount
-                                BEQ  a0, t3, getBet             ; Repeat for no character return
+                                BLTZ a0, getBet                 ; Repeat for no character return
 
-                                MUL  s0, s0, t0                 ; Multiply current bet by 10
-                                SUBI a0, a0, 0x30               ; Subtract '0' to convert ASCII to number
-                                ADD  s0, s0, a0                 ; Add new digit
                                 LI   a7, 0
                                 ECALL                           ; Print new digit to LCD
+                                MUL  s0, s0, t0                 ; Multiply current bet by 10
+                                SUBI a0, a0, 0x30               ; Subtract '0' from new digit to convert ASCII to number
+                                ADD  s0, s0, a0                 ; Add new digit
 
                                 J getBet                        ; Continue keypad input until '#'
 
@@ -601,7 +614,6 @@ main:           LI   a0, 0x01                   ; Clear screen control byte
                                         DIV  s0, s0, t0                 ; Integer division by 10 to remove last digit
                                         J getBet
 
-
                 invalidBet:     LI   a0, invalid_string         ; Pointer to invalid bet string 
                                 CALL printString                ; Print to LCD
                                 
@@ -610,11 +622,11 @@ main:           LI   a0, 0x01                   ; Clear screen control byte
                                 J placeBet
 
 
-        chooseColour:   LW   t0, balance                ; Load user's running balance
+        chooseColour:   LW   t0, balance                ; Load user running balance
                         BLT  t0, s0, invalidBet         ; Reinput bet for insufficient balance
                         SUB  s1, t0, s0                 ; Bet value removed from balance
 
-                        LA   a0, choose_string          ; Pointer to choose colour string
+                        LA   a0, colour_string          ; Pointer to choose colour string
                         CALL printString                ; Print to LCD
 
                 getColour:      LI   a7, 2                            
@@ -651,11 +663,15 @@ ALIGN
 invalid_string  DEFB    "Low balance\0"
 ALIGN
 
-choose_string   DEFB    "* = red  # = blk\0"
+colour_string   DEFB    "* = red  # = blk\0"
 ALIGN
 
+roulette_left   DEFW    0
+roulette_right  DEFW    14
+roulette_size   DEFW    111
+
 roulette        DEFB    "00|32|15|19|04|21|02|25|17|34|06|27|13|36|11|30|08|23|10|05|24|16|33|01|20|14|31|09|22|18|29|07|28|12|35|03|26|"
-ALIGN
+ALIGN                                                                                                                                   
 
 tune1	        DEFB	 8, 7
                 DEFB	 0, 1

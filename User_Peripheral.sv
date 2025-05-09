@@ -103,9 +103,9 @@ always @ (*)                                   /* Read from selected register */
           default: 
             begin
               if (freq != 0)
-                data_out  = state ? 32'h0000_0040 : 32'h0000_0080;              /* Buzzer on */
+                buzzer  = state ? 32'h0000_0040 : 32'h0000_0080;              /* Buzzer on */
               else
-                data_out  = 32'h0;           /* Buzzer off */
+                buzzer  = 32'h0;           /* Buzzer off */
             end
         endcase
       end 
