@@ -560,17 +560,17 @@ main:           LI   a0, 0x01                   ; Clear screen control byte
         start:          LA   a0, start_string           ; Pointer to start message
                         CALL printString                ; Print start message to LCD
 
-                startButton:    LI   a0, 1
+                startButton:    LI   a0, 1                      ; Button SW1
                                 LI   a7, 3
-                                ECALL
-                                BNEZ a0, startButton
+                                ECALL                           ; ECALL 3 checks for start button press
+                                BNEZ a0, startButton            ; Poll until button pressed
+
+                        LI   a7, 1
+                        ECALL                           ; ECALL 1 starts timer for keypad scanning
 
         placeBet:       LI   a0, 0x01                   ; Clear screen control byte
                         LI   a7, 0                      ; ECALL 0 clears screen
                         ECALL   
-        
-                        LI   a7, 1
-                        ECALL                           ; ECALL 1 starts timer for keypad scanning
 
                                 LI   s0, 0                      ; Initialising bet amount
                                 LI   t0, 10                     ; Multiply current bet by 10 to add each new digit
@@ -585,60 +585,103 @@ main:           LI   a0, 0x01                   ; Clear screen control byte
                                 BEQ  a0, t3, getBet             ; Repeat for no character return
 
                                 MUL  s0, s0, t0                 ; Multiply current bet by 10
+                                SUBI a0, a0, 0x30               ; Subtract '0' to convert ASCII to number
                                 ADD  s0, s0, a0                 ; Add new digit
                                 LI   a7, 0
                                 ECALL                           ; Print new digit to LCD
 
                                 J getBet                        ; Continue keypad input until '#'
 
-                backspace:      NOP
+                        backspace:      ; getCursor ECALL (check not at 0 / end of 'Enter bet: ')
+                        
+                                        LI   a0, 0x08                   ; Backspace (BS) control byte
+                                        LI   a7, 0                      ; ECALL 0 backspaces on LCD
+                                        ECALL
+
+                                        DIV  s0, s0, t0                 ; Integer division by 10 to remove last digit
+                                        J getBet
 
 
-        chooseColour:   NOP
-                        NOP
+                invalidBet:     LI   a0, invalid_string         ; Pointer to invalid bet string 
+                                CALL printString                ; Print to LCD
+                                
+                                ; software delay to show message for a bit?
+                                
+                                J placeBet
 
-        rouletteSpin:   NOP
-                        NOP
+
+        chooseColour:   LW   t0, balance                ; Load user's running balance
+                        BLT  t0, s0, invalidBet         ; Reinput bet for insufficient balance
+                        SUB  s1, t0, s0                 ; Bet value removed from balance
+
+                        LA   a0, choose_string          ; Pointer to choose colour string
+                        CALL printString                ; Print to LCD
+
+                getColour:      LI   a7, 2                            
+                                ECALL                           ; ECALL 2 gets character from keypad input
+                                BEQ  a0, t3, getColour          ; Continue keypad input for no character return
+                                BGT  a0, t2, getColour          ; Continue keypad input for numeric input
+                                LI   s2, 0                      ; 0 for black '#'
+                                BEQ  a0, t1, rouletteSpin       
+                                LI   s2, 1                      ; 1 for red '*'
+
+        rouletteSpin:   ; start timer2
+                        ; timer isr: print roulette start (space | head -> tail | space)
+                        ;            increment head and tail
+                        ; generate random num?
+
+        updateBalance:  ; check win status
+                        ; add/subtract bet amount to balance
+                        ; if balance = 0: game over
+                        ; else poll for button press to next round (placeBet)
+
+        endGame:        ; game over screen
+                        ; button press to reset
 
 stop:   J    stop
 
 
 ; ====================================== Input Data ==================================== 
 
+balance         DEFW    100
+
 start_string    DEFB    "SW1 to start\0"
 ALIGN
 
-choose          DEFB    "* = red  # = blk\0"
+invalid_string  DEFB    "Low balance\0"
+ALIGN
+
+choose_string   DEFB    "* = red  # = blk\0"
 ALIGN
 
 roulette        DEFB    "00|32|15|19|04|21|02|25|17|34|06|27|13|36|11|30|08|23|10|05|24|16|33|01|20|14|31|09|22|18|29|07|28|12|35|03|26|"
 ALIGN
 
-tune1	    DEFB	 8, 7
-            DEFB	 0, 1
-            DEFB	 8, 8
-            DEFB	 9, 8
-            DEFB	 7, 12
-            DEFB	 8, 4
-            DEFB	 9, 8
+tune1	        DEFB	 8, 7
+                DEFB	 0, 1
+                DEFB	 8, 8
+                DEFB	 9, 8
+                DEFB	 7, 12
+                DEFB	 8, 4
+                DEFB	 9, 8
 
-            DEFB	10, 7
-            DEFB	 0, 1
-            DEFB	10, 8
-            DEFB	11, 8
-            DEFB	10, 12
-            DEFB	 9, 4
-            DEFB	 8, 8
+                DEFB	10, 7
+                DEFB	 0, 1
+                DEFB	10, 8
+                DEFB	11, 8
+                DEFB	10, 12
+                DEFB	 9, 4
+                DEFB	 8, 8
 
-            DEFB	 9, 8
-            DEFB	 8, 8
-            DEFB	 7, 8
-            DEFB	 8, 16
+                DEFB	 9, 8
+                DEFB	 8, 8
+                DEFB	 7, 8
+                DEFB	 8, 16
 
-            DEFB	 0xFF
+                DEFB	 0xFF
+                ALIGN
 
 ; =================================== User Stack Space ================================= 
 
-ALIGN
 DEFS 0x1024
 user_stack:
