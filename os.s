@@ -74,8 +74,8 @@ tables:
         mExtInt_table           DEFW    0x0000_0000
                                 DEFW    0x0000_0000
                                 DEFW    0x0000_0000
-                                DEFW    0x0000_0000
-                                DEFW    timerISR
+                                DEFW    timer2ISR
+                                DEFW    timer1ISR
                                 DEFW    0x0000_0000
 
 
@@ -203,6 +203,7 @@ ecallHandler:   ADDI sp, sp, -4
         ecall_exit:     LW   ra, [sp]
                         ADDI sp, sp, 4
                         RET
+
 
 ;-----------------------------------------------------
 ;       Function: Delay
@@ -444,14 +445,40 @@ queuePush:      LA   t0, keypad_queue           ; Keypad input queue base addres
 
 queueFull:      J queueFull
 
+;-----------------------------------------------------
+;       Function: Timer2 ISR
+;                 Spin roulette and print new state
+;          param: _
+;         return: _
+;-----------------------------------------------------
+timer2ISR:      ADDI sp, sp, -4
+                SW   ra, [sp]
+
+                LA   t0, roulette_spins
+                LW   t1, [t0]                   ; Load number of spins left
+                BNEZ spinRoulette:              ; While roulette_spins > 0, spin & print
+
+        endRoulette:    LI, t0, TIMER_2_BASE
+                        LI  t1, 
+
+                
+        spinRoulette:
+
+
+        printRoulette:
+
+
+
+                LW   ra, [sp]
+                ADDI sp, sp, 4
 
 ;-----------------------------------------------------
-;       Function: Timer ISR
+;       Function: Timer1 ISR
 ;                 Scan and debounce keypad, storing inputs in queue
 ;          param: _
 ;         return: _
 ;-----------------------------------------------------
-timerISR:       ADDI sp, sp, -4
+timer1ISR:      ADDI sp, sp, -4
                 SW   ra, [sp]
                 
                 LI   s0, PIO_BASE
@@ -680,15 +707,14 @@ main:           LI   a0, 0x01                   ; Clear screen control byte
                                 BEQ  a0, t1, rouletteSpin       
                                 LI   s2, 1                      ; 1 for red '*'
 
-        rouletteSpin:   LI   a7, 4
-                        ECALL                           ; ECALL 4 starts 0.5s timer for roulette spin animation
-
-                        
+        rouletteSpin:   ; ECALL to generate random num and store in roulette_spins
         
-                        ; start timer2
+                        LI   a7, 4
+                        ECALL                           ; ECALL 4 starts 0.5s timer for roulette spin animation
+                        
                         ; timer isr: print roulette start (space | head -> tail | space)
                         ;            increment head and tail
-                        ; generate random num?
+                        ;            decrement roulette_spins to 0
 
         updateBalance:  ; check win status
                         ; add/subtract bet amount to balance
@@ -717,6 +743,7 @@ ALIGN
 roulette_left   DEFW    0
 roulette_right  DEFW    14
 roulette_size   DEFW    111
+roulette_spins  DEFW    0
 
 roulette        DEFB    "00|32|15|19|04|21|02|25|17|34|06|27|13|36|11|30|08|23|10|05|24|16|33|01|20|14|31|09|22|18|29|07|28|12|35|03|26|"
 ALIGN                                                                                                                                   
