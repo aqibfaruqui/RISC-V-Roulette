@@ -65,8 +65,11 @@ tables:
         ecall_table             DEFW    writeLCD
                                 DEFW    getCharacter
                                 DEFW    timerStart1
+                                DEFW    timerEnd1
                                 DEFW    timerStart2
+                                DEFW    timerEnd2
                                 DEFW    buttonCheck
+                                DEFW    getTimer
 
         mExtInt_table           DEFW    0x0000_0000
                                 DEFW    0x0000_0000
@@ -300,12 +303,12 @@ getCharacter:   ADDI sp, sp, -12
 
 ;-----------------------------------------------------
 ;       Function: ECALL 2
-;                 Starts 1 second timer for keypad scanning
+;                 Starts 1 millisecond timer for keypad scanning
 ;          param: _
 ;         return: _
 ;-----------------------------------------------------
-timerStart1:    LI   s0, TIMER_BASE
-                LI   t0, 1000
+timerStart1:    LI   s0, TIMER_1_BASE
+                LI   t0, 999
                 SW   t0, TIMER_LIMIT[s0]        ; Set limit to 1ms
                 LI   t0, 0x00000000B
                 SW   t0, TIMER_SET[s0]          ; Turn on counter enable, modulus and interrupt control bits
@@ -314,19 +317,45 @@ timerStart1:    LI   s0, TIMER_BASE
 
 ;-----------------------------------------------------
 ;       Function: ECALL 3
-;                 Starts _ timer for roulette spin
+;                 Ends 1 millisecond timer for keypad scanning
 ;          param: _
 ;         return: _
 ;-----------------------------------------------------
-timerStart2:    ;LI   s0, TIMER_BASE
-                ;LI   t0, 1000
-                ;SW   t0, TIMER_LIMIT[s0]        ; Set limit to 1ms
-                ;LI   t0, 0x00000000B
-                ;SW   t0, TIMER_SET[s0]          ; Turn on counter enable, modulus and interrupt control bits
-                ;RET
+timerEnd1:      LI   s0, TIMER_1_BASE
+                LI   t0, 1
+                SW   t0, TIMER_CLEAR[s0]        ; Clear timer enable bit
+                RET
+
 
 ;-----------------------------------------------------
 ;       Function: ECALL 4
+;                 Starts 0.5s timer for roulette spin
+;          param: _
+;         return: _
+;-----------------------------------------------------
+timerStart2:    LI   s0, TIMER_2_BASE
+                LI   t0, 499999
+                SW   t0, TIMER_LIMIT[s0]        ; Set limit to 0.5s
+                LI   t0, 0x00000000B
+                SW   t0, TIMER_SET[s0]          ; Turn on counter enable, modulus and interrupt control bits
+                RET
+
+
+
+;-----------------------------------------------------
+;       Function: ECALL 5
+;                 Ends 0.5 second timer for keypad scanning
+;          param: _
+;         return: _
+;-----------------------------------------------------
+timerEnd2:      LI   s0, TIMER_2_BASE
+                LI   t0, 1
+                SW   t0, TIMER_CLEAR[s0]        ; Clear timer enable bit
+                RET
+
+
+;-----------------------------------------------------
+;       Function: ECALL 6
 ;                 Checks for button press
 ;          param: a0 = Button Number (0x01 -> SW1, 0x02 -> SW2, 0x04 -> SW3, 0x08 -> SW4)
 ;         return: a0 = 0 if button pressed, unchanged if not
@@ -338,6 +367,15 @@ buttonCheck:    LI   t0, LED_BASE               ; Load LED port
                 LI   a0, 0                      ; a0 = 0 for successful button press
 
         buttonExit:     RET
+
+
+;-----------------------------------------------------
+;       Function: ECALL 7
+;                 Gets current processor timer
+;          param: _
+;         return: a0 = 
+;-----------------------------------------------------
+getSystemTimer: ; read system controller
 
 
 ;-----------------------------------------------------
@@ -542,25 +580,32 @@ user: J main
 ;          param: a0 = Pointer to string
 ;         return: _
 ;-----------------------------------------------------
-printString:
-        ADDI sp, sp, -4
-        SW   ra, [sp]                 
+printString:    ADDI sp, sp, -4
+                SW   ra, [sp]                 
+                MV   s0, a0                     ; Move pointer to local register
+                J    printStr1
 
-        MV   s0, a0                     ; Move pointer to local register
-        J    printStr1
+        printStrLoop:   LI   a7, 0
+                        ECALL                           ; ECALL 0 prints character to LCD             
+                        ADDI s0, s0, 1                  ; Increment string pointer
 
-        printStrLoop:
-                LI   a7, 0
-                ECALL                           ; ECALL 0 prints character to LCD             
-                ADDI s0, s0, 1                  ; Increment string pointer
+        printStr1:      LB   a0, [s0]                   ; Load next character
+                        BNEZ a0, printStrLoop           ; Write char if string pointer not at \0
 
-        printStr1:
-                LB   a0, [s0]                   ; Load next character
-                BNEZ a0, printStrLoop           ; Write char if string pointer not at \0
+                        LW   ra, [sp]
+                        ADDI sp, sp, 4
+                        RET
 
-                LW   ra, [sp]
-                ADDI sp, sp, 4
+;-----------------------------------------------------
+;       Function: Stall to show message between game states
+;          param: _
+;         return: _
+;-----------------------------------------------------
+messageDelay:   LI   t0, 30000000
+        msgDelayLoop:   ADDI t0, t0, -1
+                        BNEZ msgDelayLoop
                 RET
+
 
 ;-----------------------------------------------------;
 ;                                                     ;
@@ -575,12 +620,12 @@ main:           LI   a0, 0x01                   ; Clear screen control byte
                         CALL printString                ; Print start message to LCD
 
                 startButton:    LI   a0, 1                      ; Button SW1
-                                LI   a7, 3
+                                LI   a7, 6
                                 ECALL                           ; ECALL 3 checks for start button press
                                 BNEZ a0, startButton            ; Poll until button pressed
 
-                        LI   a7, 1
-                        ECALL                           ; ECALL 1 starts timer for keypad scanning
+                        LI   a7, 2
+                        ECALL                           ; ECALL 1 starts 1ms timer for keypad scanning
 
         placeBet:       LI   a0, 0x01                   ; Clear screen control byte
                         LI   a7, 0                      ; ECALL 0 clears screen
@@ -591,7 +636,7 @@ main:           LI   a0, 0x01                   ; Clear screen control byte
                                 LI   t1, 0x23                   ; ASCII for '#'
                                 LI   t2, 0x2A                   ; ASCII for '*'
 
-                getBet:         LI   a7, 2
+                getBet:         LI   a7, 1
                                 ECALL                           ; ECALL 2 gets character from keypad input
                                 BEQ  a0, t1, chooseColour       ; '#' finalises bet
                                 BEQ  a0, t2, backspace          ; '*' backspace on bet amount
@@ -602,7 +647,6 @@ main:           LI   a0, 0x01                   ; Clear screen control byte
                                 MUL  s0, s0, t0                 ; Multiply current bet by 10
                                 SUBI a0, a0, 0x30               ; Subtract '0' from new digit to convert ASCII to number
                                 ADD  s0, s0, a0                 ; Add new digit
-
                                 J getBet                        ; Continue keypad input until '#'
 
                         backspace:      ; getCursor ECALL (check not at 0 / end of 'Enter bet: ')
@@ -616,8 +660,7 @@ main:           LI   a0, 0x01                   ; Clear screen control byte
 
                 invalidBet:     LI   a0, invalid_string         ; Pointer to invalid bet string 
                                 CALL printString                ; Print to LCD
-                                
-                                ; software delay to show message for a bit?
+                                CALL messageDelay
                                 
                                 J placeBet
 
@@ -629,7 +672,7 @@ main:           LI   a0, 0x01                   ; Clear screen control byte
                         LA   a0, colour_string          ; Pointer to choose colour string
                         CALL printString                ; Print to LCD
 
-                getColour:      LI   a7, 2                            
+                getColour:      LI   a7, 1                            
                                 ECALL                           ; ECALL 2 gets character from keypad input
                                 BEQ  a0, t3, getColour          ; Continue keypad input for no character return
                                 BGT  a0, t2, getColour          ; Continue keypad input for numeric input
@@ -637,7 +680,12 @@ main:           LI   a0, 0x01                   ; Clear screen control byte
                                 BEQ  a0, t1, rouletteSpin       
                                 LI   s2, 1                      ; 1 for red '*'
 
-        rouletteSpin:   ; start timer2
+        rouletteSpin:   LI   a7, 4
+                        ECALL                           ; ECALL 4 starts 0.5s timer for roulette spin animation
+
+                        
+        
+                        ; start timer2
                         ; timer isr: print roulette start (space | head -> tail | space)
                         ;            increment head and tail
                         ; generate random num?
