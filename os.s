@@ -374,9 +374,11 @@ buttonCheck:    LI   t0, LED_BASE               ; Load LED port
 ;       Function: ECALL 7
 ;                 Gets current processor timer
 ;          param: _
-;         return: a0 = 
+;         return: a0 = Low 32 bits of RISC-V clock
 ;-----------------------------------------------------
-getSystemTimer: ; read system controller
+getSystemTimer: LI   t0, SYSTEM_BASE
+                LW   a0, SYSTEM_TIME_LOW[t0]
+                RET
 
 
 ;-----------------------------------------------------
@@ -623,6 +625,14 @@ printString:    ADDI sp, sp, -4
                         ADDI sp, sp, 4
                         RET
 
+
+;-----------------------------------------------------
+;       Function: Performs XorShift32 algorithm for pseudorandom number generation
+;          param: a0 = Integer
+;         return: a0 = Pseudorandom integer
+;-----------------------------------------------------
+XorShift32:
+
 ;-----------------------------------------------------
 ;       Function: Stall to show message between game states
 ;          param: _
@@ -672,7 +682,7 @@ main:           LI   a0, 0x01                   ; Clear screen control byte
                                 LI   a7, 0
                                 ECALL                           ; Print new digit to LCD
                                 MUL  s0, s0, t0                 ; Multiply current bet by 10
-                                SUBI a0, a0, 0x30               ; Subtract '0' from new digit to convert ASCII to number
+                                SUBI a0, a0, '0'                ; Subtract '0' from new digit to convert ASCII to number
                                 ADD  s0, s0, a0                 ; Add new digit
                                 J getBet                        ; Continue keypad input until '#'
 
@@ -707,8 +717,13 @@ main:           LI   a0, 0x01                   ; Clear screen control byte
                                 BEQ  a0, t1, rouletteSpin       
                                 LI   s2, 1                      ; 1 for red '*'
 
-        rouletteSpin:   ; ECALL to generate random num and store in roulette_spins
-        
+        rouletteSpin:   LI   a7, 7
+                        ECALL                           ; ECALL 7 returns system clock (for pseudo-randomness)
+                        CALL XorShift32                 ; Pseudorandom algorithm on system clock
+                        LA   t0, roulette_spins         ; 
+                        SW   a0, [t0]
+
+
                         LI   a7, 4
                         ECALL                           ; ECALL 4 starts 0.5s timer for roulette spin animation
                         
